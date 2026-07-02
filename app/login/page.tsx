@@ -15,6 +15,7 @@ export default function DashboardGlobal() {
     lotes: any[];
     historico: any[];
   }>({
+   @ts-ignore
     usuarios: [],
     productos: [],
     inventario: [],
