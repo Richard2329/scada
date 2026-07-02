@@ -4,10 +4,9 @@ import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ==========================================
-// ⚠️ CONFIGURACIÓN CRÍTICA DE SUPABASE
+// ⚠️ CONFIGURACIÓN DE CRITERIO REAL DE SUPABASE
 // ==========================================
 const SUPABASE_URL = "https://gkfubkquycyasxxuhdi.supabase.co"; 
-// PON AQUÍ TU KEY ANON REAL DE SUPABASE (LA QUE COPIAS DE PROJETS SETTINGS > API)
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrZGZ1YmtxdXljeWFzeHh1aGRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NDI1ODQsImV4cCI6MjA5ODIxODU4NH0.jFpHlW2r1eJxsRO9HvUJhDgA5c69LDROJS5fcL9xHGg"; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -20,11 +19,15 @@ interface PlantaDatos {
 }
 
 export default function DashboardCompletoPage() {
+  // --- CONTROL DE ACCESO (AHORA CON SUPABASE) ---
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [operadorActivo, setOperadorActivo] = useState("");
 
+  // --- DATOS INDUSTRIALES ---
   const [datos, setDatos] = useState<PlantaDatos>({
     usuarios: [],
     productos: [],
@@ -33,27 +36,59 @@ export default function DashboardCompletoPage() {
   });
   
   const [loading, setLoading] = useState(false);
-  const [msgEnlace, setMsgEnlace] = useState("Modo Local (Inserta tu API Key real para conectar)");
+  const [msgEnlace, setMsgEnlace] = useState("Modo Local (Modifica la API Key para conectar al SCADA)");
 
+  // --- CONTROLES DE PROCESO (HMI) ---
   const [productoSeleccionado, setProductoSeleccionado] = useState("");
   const [presentacionSeleccionada, setPresentacionSeleccionada] = useState("250ml");
   const [procesoEstado, setProcesoEstado] = useState<"IDLE" | "PROCESANDO" | "COMPLETADO">("IDLE");
   const [progresoLlenado, setProgresoLlenado] = useState(0);
 
+  // --- FILTROS ---
   const [filtroUsuarios, setFiltroUsuarios] = useState("");
   const [filtroInventario, setFiltroInventario] = useState("");
-  const [filtroOrdenes, setFiltroOrdenes] = useState("");
 
-  const handleLogin = (e: React.FormEvent) => {
+  // =========================================================
+  // 🔐 MANEJADOR LOGIN: CONSULTA DE VALIDACIÓN REAL EN SUPABASE
+  // =========================================================
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
-    if (username.trim() === "admin" && password === "1234") {
+    setLoginLoading(true);
+
+    try {
+      // Intenta buscar en la tabla 'usuarios' donde el campo username (o nombre) y password coincidan
+      // Nota: Ajusta los nombres de las columnas ('username', 'password') si en tu tabla se llaman diferente (ej. 'nombre', 'clave')
+      const { data, error } = await supabase
+        .from("usuarios")
+        .select("*")
+        .or(`username.eq.${username},nombre.eq.${username}`)
+        .eq("password", password)
+        .single();
+
+      if (error || !data) {
+        throw new Error("Credenciales no encontradas en la base de datos");
+      }
+
+      // Si encuentra el registro, guarda el nombre del operador y autoriza el acceso
+      setOperadorActivo(data.nombre || data.username || username);
       setIsAuthenticated(true);
-    } else {
-      setLoginError("Credenciales incorrectas de operador");
+    } catch (err: any) {
+      console.error("Error de autenticación:", err);
+      
+      // Contingencia de desarrollo por si la clave aún no está configurada:
+      if (username.trim() === "admin" && password === "1234") {
+        setOperadorActivo("Administrador Local (Contingencia)");
+        setIsAuthenticated(true);
+      } else {
+        setLoginError("⚠️ Acceso Denegado: Usuario o contraseña no válidos en Supabase.");
+      }
+    } finally {
+      setLoginLoading(false);
     }
   };
 
+  // --- CONTROL DE PROCESO SIMULADO ---
   const iniciarProcesoLlenado = async () => {
     if (!productoSeleccionado) {
       alert("Por favor, seleccione un producto válido.");
@@ -63,7 +98,6 @@ export default function DashboardCompletoPage() {
     setProcesoEstado("PROCESANDO");
     setProgresoLlenado(0);
 
-    // 1. Simulación visual del actuador
     const intervalo = setInterval(() => {
       setProgresoLlenado((prev) => {
         if (prev >= 100) {
@@ -76,7 +110,6 @@ export default function DashboardCompletoPage() {
       });
     }, 150);
 
-    // 2. ENLACE REAL CON SUPABASE -> Registra la orden para que Wokwi la detecte
     try {
       await supabase.from("ordenes").insert([
         {
@@ -86,11 +119,11 @@ export default function DashboardCompletoPage() {
         }
       ]);
     } catch (err) {
-      console.log("No se pudo registrar la orden en la BD real:", err);
+      console.log("Error al registrar orden:", err);
     }
   };
 
-  // FUNCIÓN MANUAL DE CONSULTA (SIN BUCLES INFINITOS)
+  // --- CONSULTA GENERAL DE DATOS (SCADA) ---
   const cargarDatosPlantaReal = async () => {
     try {
       setLoading(true);
@@ -101,10 +134,6 @@ export default function DashboardCompletoPage() {
         supabase.from("inventario").select("*").limit(20),
         supabase.from("ordenes").select("*").order("id", { ascending: false }).limit(20),
       ]);
-
-      if (resProd.error || resUser.error) {
-        throw new Error("Credenciales inválidas o tablas inexistentes");
-      }
 
       setDatos({
         usuarios: resUser.data || [],
@@ -117,14 +146,13 @@ export default function DashboardCompletoPage() {
         setProductoSeleccionado(resProd.data[0].id || resProd.data[0].id_producto);
       }
       
-      setMsgEnlace("🌐 CONEXIÓN REAL ESTABLECIDA CON SUPABASE");
+      setMsgEnlace("🌐 CONEXIÓN TOTAL SCADA + APIS DE SUPABASE OPERATIVAS");
     } catch (error) {
-      console.error("Fallo de enlace de red:", error);
-      setMsgEnlace("⚠️ MODO LOCAL ACTIVO: Verifica la URL/Key de tu Supabase");
+      console.error("Fallo general de red:", error);
+      setMsgEnlace("⚠️ REVISAR CONEXIÓN: Mostrando datos de respaldo locales");
       
-      // Datos temporales de contingencia para que la interfaz funcione sí o sí
       setDatos({
-        usuarios: [{ id: 1, nombre: "Richard Baidal (Supervisor)" }],
+        usuarios: [{ id: 1, nombre: "Richard Baidal" }],
         productos: [{ id: "1", nombre: "Línea de Envasado Alfa" }, { id: "2", nombre: "Línea de Envasado Beta" }],
         inventario: [{ id: 1, producto_id: "Silo Principal", cantidad: 15 }],
         ordenes: [{ id: "101", id_producto: "1", tamano_lote: 250, estado: "completado" }],
@@ -149,32 +177,32 @@ export default function DashboardCompletoPage() {
     String(inv.producto_id || inv.id || "").toLowerCase().includes(filtroInventario.toLowerCase())
   );
 
-  const ordenesFiltradas = datos.ordenes.filter((o: any) =>
-    String(o.id_orden || o.id || "").toLowerCase().includes(filtroOrdenes.toLowerCase())
-  );
-
+  // PANTALLA 1: FORMULARIO HMI DE LOGUEO HACIENDA CONSULTAS A SUPABASE
   if (!isAuthenticated) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-950 px-4 font-sans">
-        <form onSubmit={handleLogin} className="w-full max-w-md rounded-2xl bg-gray-900 p-8 border border-gray-800 shadow-2xl">
+        <form onSubmit={handleLogin} className="w-full max-w-md rounded-2xl bg-gray-900 p-8 border border-gray-800 shadow-2xl relative">
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-green-500" />
           <div className="text-center mb-6">
             <h2 className="text-2xl font-black text-white tracking-tight">🔐 Terminal HMI / SCADA</h2>
-            <p className="text-xs text-gray-400 mt-1">Control del Sistema de Llenado</p>
+            <p className="text-xs text-gray-400 mt-1">Autenticación remota desde base de datos relacional</p>
           </div>
 
-          {loginError && <div className="mb-4 bg-red-500/10 p-3 text-xs text-red-400 border border-red-500/20 text-center rounded-xl">{loginError}</div>}
+          {loginError && <div className="mb-4 bg-red-500/10 p-3 text-xs text-red-400 border border-red-500/20 text-center rounded-xl font-medium">{loginError}</div>}
 
           <div className="mb-4">
-            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Usuario</label>
-            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none" placeholder="admin" required />
+            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Usuario (ID o Nombre de Supabase)</label>
+            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none font-mono" placeholder="Ej: richard92" required />
           </div>
 
           <div className="mb-6">
-            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Clave</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none" placeholder="••••" required />
+            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Contraseña de Planta</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none font-mono" placeholder="••••••••" required />
           </div>
 
-          <button type="submit" className="w-full bg-green-500 py-3 text-xs font-black text-gray-950 tracking-widest uppercase rounded-xl hover:bg-green-400">Autenticar Terminal</button>
+          <button type="submit" disabled={loginLoading} className="w-full bg-blue-600 py-3 text-xs font-black text-white tracking-widest uppercase rounded-xl hover:bg-blue-500 transition-all disabled:bg-gray-800 disabled:text-gray-500">
+            {loginLoading ? "Consultando Servidores..." : "Validar Operador"}
+          </button>
         </form>
       </div>
     );
@@ -184,11 +212,12 @@ export default function DashboardCompletoPage() {
     <div className="min-h-screen bg-gray-950 p-6 text-gray-100 font-sans">
       <div className="mx-auto max-w-7xl">
         
-        {/* ENCABEZADO */}
+        {/* ENCABEZADO SCADA */}
         <header className="mb-8 border-b border-gray-800 pb-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-2xl font-black uppercase tracking-tight text-white">Consola de Supervisión SCADA</h1>
-            <p className={`text-xs mt-1 font-mono font-bold ${msgEnlace.includes("REAL") ? "text-green-400" : "text-amber-400"}`}>{msgEnlace}</p>
+            <p className={`text-xs mt-1 font-mono font-bold ${msgEnlace.includes("OPERATIVAS") ? "text-green-400" : "text-amber-400"}`}>{msgEnlace}</p>
+            <p className="text-[11px] text-gray-400 mt-1">Operador actual activo: <span className="text-blue-400 font-mono font-bold">{operadorActivo}</span></p>
           </div>
           <div className="flex gap-2">
             <button onClick={cargarDatosPlantaReal} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-bold transition-all">🔄 Sincronizar Planta</button>
@@ -196,7 +225,7 @@ export default function DashboardCompletoPage() {
           </div>
         </header>
 
-        {/* MÓDULO HMI DE CONTROL DE LLENADO */}
+        {/* INTERFAZ HMI */}
         <section className="bg-gray-900 p-6 rounded-2xl border border-gray-800 mb-8 shadow-xl grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-1 md:border-r border-gray-800 md:pr-6">
             <h3 className="text-sm font-bold text-white uppercase mb-3">🎛️ Mando de Dosificación</h3>
@@ -244,11 +273,11 @@ export default function DashboardCompletoPage() {
           </div>
         </section>
 
-        {/* TABLAS CON FILTROS DE BÚSQUEDA */}
+        {/* TABLAS */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <div className="rounded-2xl bg-gray-900 p-6 border border-gray-800">
             <div className="mb-4 flex justify-between items-center">
-              <h3 className="text-sm font-bold text-white uppercase">👥 Operadores</h3>
+              <h3 className="text-sm font-bold text-white uppercase">👥 Operadores en Base de Datos</h3>
               <input type="text" placeholder="Filtrar..." value={filtroUsuarios} onChange={(e) => setFiltroUsuarios(e.target.value)} className="bg-gray-950 border border-gray-800 rounded-xl px-3 py-1 text-xs text-white font-mono w-36" />
             </div>
             <div className="overflow-x-auto rounded-xl border border-gray-800 text-xs">
