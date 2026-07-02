@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 
 // Reemplaza con tus credenciales reales de Supabase si cambian
 const SUPABASE_URL = "https://gkdfrbkquycyasxxuhdi.supabase.co"; 
-const SUPABASE_ANON_KEY = "tu_clave_anon_aqui";
+const SUPABASE_ANON_KEY = "sb_publishable_20F0ush-qkP8A4fUCbVaVA_8wQmFkhG";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
