@@ -368,7 +368,6 @@ export default function DashboardGlobal() {
               </div>
             </div>
             
-            {/* CORRECCIÓN VISUAL: overflow-hidden y altura estricta para evitar fugas */}
             <div className="bg-gray-950/90 rounded-xl p-4 border border-gray-800 h-48 flex flex-col justify-between relative overflow-hidden shadow-inner">
               <svg viewBox="0 0 500 150" className="w-full h-36 overflow-hidden" preserveAspectRatio="none">
                 <line x1="0" y1="30" x2="500" y2="30" stroke="#ef4444" strokeWidth="1" strokeDasharray="4,4" />
@@ -388,7 +387,6 @@ export default function DashboardGlobal() {
                   const ultObj = ultimasBolsas[index - 1].peso_objetivo || 25;
                   const devPrev = ultReal - ultObj;
 
-                  // Escalado controlado dentro del viewBox (0 a 150)
                   const y1 = Math.max(10, Math.min(140, 75 - (devPrev * 45)));
                   const y2 = Math.max(10, Math.min(140, 75 - (dev1 * 45)));
 
