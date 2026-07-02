@@ -99,6 +99,7 @@ export default function DashboardGlobal() {
     });
 
     setDatos({
+      @ts-ignore
       usuarios: resUser.data || [],
       productos: productos,
       inventario: resInv.data || [],
