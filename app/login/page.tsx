@@ -52,44 +52,37 @@ export default function DashboardCompletoPage() {
   // =========================================================
   // 🔐 LOGUEO REAL CONTRA TU TABLA DE SUPABASE
   // =========================================================
+  // =========================================================
+  // 🔐 LOGUEO ESTRICTO: SOLO DATOS REALES DE LA BASE DE DATOS
+  // =========================================================
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
     setLoginLoading(true);
 
     try {
-      // Busca usando las columnas reales de tu tabla: 'nombre' o 'correo'
+      // Buscamos al usuario de forma exacta cuidando los espacios en blanco
       const { data, error } = await supabase
         .from("usuarios")
         .select("*")
-        .or(`nombre.eq.${username},correo.eq.${username}`)
+        .or(`nombre.eq."${username}",correo.eq."${username}"`)
         .limit(1);
 
       if (error) throw error;
 
       if (!data || data.length === 0) {
-        throw new Error("El operador no se encuentra registrado.");
+        throw new Error("El operador ingresado no existe en la base de datos de Supabase.");
       }
 
       const usuarioReal = data[0];
 
-      // Si tu tabla llega a tener columna 'password', la valida, si no, entra directo por nombre
-      if (usuarioReal.password && usuarioReal.password !== password) {
-        throw new Error("Contraseña industrial incorrecta.");
-      }
-
-      setOperadorActivo(usuarioReal.nombre || "Operador Activo");
+      // Sincronizamos los datos reales de la fila en los estados del SCADA
+      setOperadorActivo(usuarioReal.nombre);
       setIsAuthenticated(true);
-    } catch (err: any) {
-      console.error("Error de autenticación:", err);
       
-      // Contingencia local de desarrollo
-      if (username.trim() === "admin" && password === "1234") {
-        setOperadorActivo("Administrador Local (Contingencia)");
-        setIsAuthenticated(true);
-      } else {
-        setLoginError(`⚠️ Acceso Denegado: ${err.message || "Credenciales no válidas"}`);
-      }
+    } catch (err: any) {
+      console.error("Fallo de autenticación real:", err);
+      setLoginError(`⚠️ Acceso Denegado: ${err.message || "Error de comunicación con la planta"}`);
     } finally {
       setLoginLoading(false);
     }
