@@ -15,7 +15,6 @@ export default function DashboardGlobal() {
     lotes: any[];
     historico: any[];
   }>({
-   @ts-ignore
     usuarios: [],
     productos: [],
     inventario: [],
@@ -100,7 +99,7 @@ export default function DashboardGlobal() {
     });
 
     setDatos({
-      @ts-ignore
+      //@ts-ignore
       usuarios: resUser.data || [],
       productos: productos,
       inventario: resInv.data || [],
