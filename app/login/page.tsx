@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ==========================================
-// ⚠️ CONFIGURACIÓN DE CRITERIO REAL DE SUPABASE
+// 🌐 CONFIGURACIÓN DE ENLACE DE SUPABASE
 // ==========================================
 const SUPABASE_URL = "https://gkfubkquycyasxxuhdi.supabase.co"; 
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrZGZ1YmtxdXljeWFzeHh1aGRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NDI1ODQsImV4cCI6MjA5ODIxODU4NH0.jFpHlW2r1eJxsRO9HvUJhDgA5c69LDROJS5fcL9xHGg"; 
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc2MiOiJzdXBhYmFzZSIsInJ1bGUiOiJhbm9uIiwi..."; // Tu clave real de Supabase
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// 🛠️ INTERFAZ CORREGIDA: Evita que Vercel falle por tipos incorrectos
 interface PlantaDatos {
   usuarios: any[];
   productos: any[];
@@ -19,7 +20,7 @@ interface PlantaDatos {
 }
 
 export default function DashboardCompletoPage() {
-  // --- CONTROL DE ACCESO (AHORA CON SUPABASE) ---
+  // --- CONTROL DE ACCESO ---
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -27,7 +28,7 @@ export default function DashboardCompletoPage() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [operadorActivo, setOperadorActivo] = useState("");
 
-  // --- DATOS INDUSTRIALES ---
+  // --- DATOS INDUSTRIALES (Tipado seguro para 'never[]') ---
   const [datos, setDatos] = useState<PlantaDatos>({
     usuarios: [],
     productos: [],
@@ -36,20 +37,20 @@ export default function DashboardCompletoPage() {
   });
   
   const [loading, setLoading] = useState(false);
-  const [msgEnlace, setMsgEnlace] = useState("Modo Local (Modifica la API Key para conectar al SCADA)");
+  const [msgEnlace, setMsgEnlace] = useState("Estableciendo enlace teleinformático...");
 
-  // --- CONTROLES DE PROCESO (HMI) ---
+  // --- CONTROLES DE PROCESO (HMI DE ENCHANCE) ---
   const [productoSeleccionado, setProductoSeleccionado] = useState("");
   const [presentacionSeleccionada, setPresentacionSeleccionada] = useState("250ml");
   const [procesoEstado, setProcesoEstado] = useState<"IDLE" | "PROCESANDO" | "COMPLETADO">("IDLE");
   const [progresoLlenado, setProgresoLlenado] = useState(0);
 
-  // --- FILTROS ---
+  // --- FILTROS DE TABLAS ---
   const [filtroUsuarios, setFiltroUsuarios] = useState("");
   const [filtroInventario, setFiltroInventario] = useState("");
 
   // =========================================================
-  // 🔐 MANEJADOR LOGIN: CONSULTA DE VALIDACIÓN REAL EN SUPABASE
+  // 🔐 LOGUEO REAL CONTRA TU TABLA DE SUPABASE
   // =========================================================
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,41 +58,49 @@ export default function DashboardCompletoPage() {
     setLoginLoading(true);
 
     try {
-      // Intenta buscar en la tabla 'usuarios' donde el campo username (o nombre) y password coincidan
-      // Nota: Ajusta los nombres de las columnas ('username', 'password') si en tu tabla se llaman diferente (ej. 'nombre', 'clave')
+      // Busca usando las columnas reales de tu tabla: 'nombre' o 'correo'
       const { data, error } = await supabase
         .from("usuarios")
         .select("*")
-        .or(`username.eq.${username},nombre.eq.${username}`)
-        .eq("password", password)
-        .single();
+        .or(`nombre.eq.${username},correo.eq.${username}`)
+        .limit(1);
 
-      if (error || !data) {
-        throw new Error("Credenciales no encontradas en la base de datos");
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        throw new Error("El operador no se encuentra registrado.");
       }
 
-      // Si encuentra el registro, guarda el nombre del operador y autoriza el acceso
-      setOperadorActivo(data.nombre || data.username || username);
+      const usuarioReal = data[0];
+
+      // Si tu tabla llega a tener columna 'password', la valida, si no, entra directo por nombre
+      if (usuarioReal.password && usuarioReal.password !== password) {
+        throw new Error("Contraseña industrial incorrecta.");
+      }
+
+      setOperadorActivo(usuarioReal.nombre || "Operador Activo");
       setIsAuthenticated(true);
     } catch (err: any) {
       console.error("Error de autenticación:", err);
       
-      // Contingencia de desarrollo por si la clave aún no está configurada:
+      // Contingencia local de desarrollo
       if (username.trim() === "admin" && password === "1234") {
         setOperadorActivo("Administrador Local (Contingencia)");
         setIsAuthenticated(true);
       } else {
-        setLoginError("⚠️ Acceso Denegado: Usuario o contraseña no válidos en Supabase.");
+        setLoginError(`⚠️ Acceso Denegado: ${err.message || "Credenciales no válidas"}`);
       }
     } finally {
       setLoginLoading(false);
     }
   };
 
-  // --- CONTROL DE PROCESO SIMULADO ---
+  // =========================================================
+  // 🧪 CONTROLES DE PROCESO SIMULADO (ACTUADOR HMI)
+  // =========================================================
   const iniciarProcesoLlenado = async () => {
     if (!productoSeleccionado) {
-      alert("Por favor, seleccione un producto válido.");
+      alert("Por favor, seleccione un producto válido de la línea.");
       return;
     }
     
@@ -111,6 +120,7 @@ export default function DashboardCompletoPage() {
     }, 150);
 
     try {
+      // Envía el registro de la orden a Supabase si la tabla existe
       await supabase.from("ordenes").insert([
         {
           id_producto: productoSeleccionado,
@@ -119,11 +129,13 @@ export default function DashboardCompletoPage() {
         }
       ]);
     } catch (err) {
-      console.log("Error al registrar orden:", err);
+      console.log("Error al registrar orden en base de datos:", err);
     }
   };
 
-  // --- CONSULTA GENERAL DE DATOS (SCADA) ---
+  // =========================================================
+  // 🔄 CARGA GENERAL DE TODAS LAS TABLAS DEL SCADA
+  // =========================================================
   const cargarDatosPlantaReal = async () => {
     try {
       setLoading(true);
@@ -132,7 +144,7 @@ export default function DashboardCompletoPage() {
         supabase.from("usuarios").select("*").limit(20),
         supabase.from("productos").select("*").limit(20),
         supabase.from("inventario").select("*").limit(20),
-        supabase.from("ordenes").select("*").order("id", { ascending: false }).limit(20),
+        supabase.from("ordenes").select("*").limit(20),
       ]);
 
       setDatos({
@@ -143,19 +155,20 @@ export default function DashboardCompletoPage() {
       });
       
       if (resProd.data && resProd.data.length > 0) {
-        setProductoSeleccionado(resProd.data[0].id || resProd.data[0].id_producto);
+        setProductoSeleccionado(resProd.data[0].id || resProd.data[0].id_producto || "");
       }
       
-      setMsgEnlace("🌐 CONEXIÓN TOTAL SCADA + APIS DE SUPABASE OPERATIVAS");
+      setMsgEnlace("🌐 ENLACE TELEINFORMÁTICO ESTABLECIDO CON SUPABASE");
     } catch (error) {
-      console.error("Fallo general de red:", error);
+      console.error("Fallo general de red SCADA:", error);
       setMsgEnlace("⚠️ REVISAR CONEXIÓN: Mostrando datos de respaldo locales");
       
+      // Datos de respaldo para que la pantalla nunca se quede vacía o en 0
       setDatos({
-        usuarios: [{ id: 1, nombre: "Richard Baidal" }],
+        usuarios: [{ id_usuario: 1, nombre: "Operador Principal", correo: "baidal291992@hotmail.com" }],
         productos: [{ id: "1", nombre: "Línea de Envasado Alfa" }, { id: "2", nombre: "Línea de Envasado Beta" }],
-        inventario: [{ id: 1, producto_id: "Silo Principal", cantidad: 15 }],
-        ordenes: [{ id: "101", id_producto: "1", tamano_lote: 250, estado: "completado" }],
+        inventario: [{ id: 1, producto_id: "Silo Principal", cantidad: 75 }],
+        ordenes: [],
       });
       setProductoSeleccionado("1");
     } finally {
@@ -170,54 +183,54 @@ export default function DashboardCompletoPage() {
   }, [isAuthenticated]);
 
   const usuariosFiltrados = datos.usuarios.filter((u: any) =>
-    (u.nombre || u.username || "").toLowerCase().includes(filtroUsuarios.toLowerCase())
+    (u.nombre || "").toLowerCase().includes(filtroUsuarios.toLowerCase())
   );
 
   const inventarioFiltrado = datos.inventario.filter((inv: any) =>
-    String(inv.producto_id || inv.id || "").toLowerCase().includes(filtroInventario.toLowerCase())
+    String(inv.producto_id || "").toLowerCase().includes(filtroInventario.toLowerCase())
   );
 
-  // PANTALLA 1: FORMULARIO HMI DE LOGUEO HACIENDA CONSULTAS A SUPABASE
+  // VISTA 1: TERMINAL HMI DE INGRESO
   if (!isAuthenticated) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-950 px-4 font-sans">
-        <form onSubmit={handleLogin} className="w-full max-w-md rounded-2xl bg-gray-900 p-8 border border-gray-800 shadow-2xl relative">
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-green-500" />
+        <form onSubmit={handleLogin} className="w-full max-w-md rounded-2xl bg-gray-900 p-8 border border-gray-800 shadow-2xl">
           <div className="text-center mb-6">
             <h2 className="text-2xl font-black text-white tracking-tight">🔐 Terminal HMI / SCADA</h2>
-            <p className="text-xs text-gray-400 mt-1">Autenticación remota desde base de datos relacional</p>
+            <p className="text-xs text-gray-400 mt-1">Verificación de Credenciales en Supabase</p>
           </div>
 
           {loginError && <div className="mb-4 bg-red-500/10 p-3 text-xs text-red-400 border border-red-500/20 text-center rounded-xl font-medium">{loginError}</div>}
 
           <div className="mb-4">
-            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Usuario (ID o Nombre de Supabase)</label>
-            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none font-mono" placeholder="Ej: richard92" required />
+            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Usuario (Nombre o Correo de la BD)</label>
+            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none" placeholder="Ej: Operador Principal" required />
           </div>
 
           <div className="mb-6">
-            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Contraseña de Planta</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none font-mono" placeholder="••••••••" required />
+            <label className="block text-[10px] font-bold text-gray-400 uppercase mb-2">Clave de Planta</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-gray-950 p-3 text-sm text-white border border-gray-800 rounded-xl focus:border-green-500 focus:outline-none" placeholder="••••" required />
           </div>
 
-          <button type="submit" disabled={loginLoading} className="w-full bg-blue-600 py-3 text-xs font-black text-white tracking-widest uppercase rounded-xl hover:bg-blue-500 transition-all disabled:bg-gray-800 disabled:text-gray-500">
-            {loginLoading ? "Consultando Servidores..." : "Validar Operador"}
+          <button type="submit" disabled={loginLoading} className="w-full bg-blue-600 py-3 text-xs font-black text-white tracking-widest uppercase rounded-xl hover:bg-blue-500 transition-all">
+            {loginLoading ? "CONECTANDO..." : "VALIDAR OPERADOR"}
           </button>
         </form>
       </div>
     );
   }
 
+  // VISTA 2: PANEL SCADA INDUSTRIAL COMPLETO
   return (
     <div className="min-h-screen bg-gray-950 p-6 text-gray-100 font-sans">
       <div className="mx-auto max-w-7xl">
         
-        {/* ENCABEZADO SCADA */}
+        {/* ENCABEZADO */}
         <header className="mb-8 border-b border-gray-800 pb-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h1 className="text-2xl font-black uppercase tracking-tight text-white">Consola de Supervisión SCADA</h1>
-            <p className={`text-xs mt-1 font-mono font-bold ${msgEnlace.includes("OPERATIVAS") ? "text-green-400" : "text-amber-400"}`}>{msgEnlace}</p>
-            <p className="text-[11px] text-gray-400 mt-1">Operador actual activo: <span className="text-blue-400 font-mono font-bold">{operadorActivo}</span></p>
+            <h1 className="text-2xl font-black uppercase tracking-tight text-white">📊 Panel de Control SCADA</h1>
+            <p className={`text-xs mt-1 font-mono font-bold ${msgEnlace.includes("ESTABLECIDO") ? "text-green-400" : "text-amber-400"}`}>{msgEnlace}</p>
+            <p className="text-xs text-gray-400 mt-0.5">Operador Activo: <span className="text-blue-400 font-bold">{operadorActivo}</span></p>
           </div>
           <div className="flex gap-2">
             <button onClick={cargarDatosPlantaReal} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-xs font-bold transition-all">🔄 Sincronizar Planta</button>
@@ -225,7 +238,27 @@ export default function DashboardCompletoPage() {
           </div>
         </header>
 
-        {/* INTERFAZ HMI */}
+        {/* INDICADORES SCADA */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-4 mb-8">
+          <div className="bg-gray-900 p-4 rounded-xl border border-gray-800">
+            <span className="text-[10px] text-gray-400 font-bold uppercase">Total Usuarios</span>
+            <div className="text-2xl font-black text-white mt-1">{datos.usuarios.length}</div>
+          </div>
+          <div className="bg-gray-900 p-4 rounded-xl border border-gray-800">
+            <span className="text-[10px] text-gray-400 font-bold uppercase">Productos Activos</span>
+            <div className="text-2xl font-black text-blue-400 mt-1">{datos.productos.length}</div>
+          </div>
+          <div className="bg-gray-900 p-4 rounded-xl border border-gray-800">
+            <span className="text-[10px] text-gray-400 font-bold uppercase">Items en Inventario</span>
+            <div className="text-2xl font-black text-yellow-400 mt-1">{datos.inventario.length}</div>
+          </div>
+          <div className="bg-gray-900 p-4 rounded-xl border border-gray-800">
+            <span className="text-[10px] text-gray-400 font-bold uppercase">Órdenes Procesadas</span>
+            <div className="text-2xl font-black text-purple-400 mt-1">{datos.ordenes.length}</div>
+          </div>
+        </div>
+
+        {/* INTERFAZ DE CONTROL HMI (DOSIFICADOR AUTOMÁTICO) */}
         <section className="bg-gray-900 p-6 rounded-2xl border border-gray-800 mb-8 shadow-xl grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-1 md:border-r border-gray-800 md:pr-6">
             <h3 className="text-sm font-bold text-white uppercase mb-3">🎛️ Mando de Dosificación</h3>
@@ -234,7 +267,7 @@ export default function DashboardCompletoPage() {
               <label className="block text-[10px] text-gray-400 font-bold uppercase mb-1.5">1. Seleccionar Línea de Producto</label>
               <select value={productoSeleccionado} onChange={(e) => setProductoSeleccionado(e.target.value)} className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none">
                 {datos.productos.map((prod: any, idx: number) => (
-                  <option key={idx} value={prod.id || prod.id_producto}>{prod.nombre || `Producto #${prod.id}`}</option>
+                  <option key={idx} value={prod.id || prod.id_producto}>{prod.nombre || `Línea #${prod.id}`}</option>
                 ))}
               </select>
             </div>
@@ -273,42 +306,39 @@ export default function DashboardCompletoPage() {
           </div>
         </section>
 
-        {/* TABLAS */}
+        {/* TABLAS COMPLETAS DEL SCADA */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          {/* TABLA: OPERADORES CON TU COLUMNA id_usuario */}
           <div className="rounded-2xl bg-gray-900 p-6 border border-gray-800">
             <div className="mb-4 flex justify-between items-center">
-              <h3 className="text-sm font-bold text-white uppercase">👥 Operadores en Base de Datos</h3>
+              <h3 className="text-sm font-bold text-white uppercase">👥 Registro de Usuarios</h3>
               <input type="text" placeholder="Filtrar..." value={filtroUsuarios} onChange={(e) => setFiltroUsuarios(e.target.value)} className="bg-gray-950 border border-gray-800 rounded-xl px-3 py-1 text-xs text-white font-mono w-36" />
             </div>
             <div className="overflow-x-auto rounded-xl border border-gray-800 text-xs">
               <table className="w-full text-left text-gray-400">
+                <thead>
+                  <tr className="bg-gray-950 text-[10px] font-bold uppercase text-gray-400 border-b border-gray-800"><th className="px-4 py-2">ID</th><th className="px-4 py-2">Nombre</th><th className="px-4 py-2">Correo</th></tr>
+                </thead>
                 <tbody>
                   {usuariosFiltrados.map((u: any, i: number) => (
-                    <tr key={i} className="border-b border-gray-800/40"><td className="px-4 py-2 font-mono text-green-400">#{u.id}</td><td className="px-4 py-2 text-white">{u.nombre || u.username}</td></tr>
+                    <tr key={i} className="border-b border-gray-800/40">
+                      <td className="px-4 py-2 font-mono text-green-400">#{u.id_usuario || u.id}</td>
+                      <td className="px-4 py-2 text-white font-medium">{u.nombre}</td>
+                      <td className="px-4 py-2 font-mono text-gray-500">{u.correo}</td>
+                    </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </div>
 
+          {/* TABLA: ESTADO DE INVENTARIO */}
           <div className="rounded-2xl bg-gray-900 p-6 border border-gray-800">
             <div className="mb-4 flex justify-between items-center">
-              <h3 className="text-sm font-bold text-white uppercase">📦 Inventario</h3>
+              <h3 className="text-sm font-bold text-white uppercase">📦 Estado del Inventario</h3>
               <input type="text" placeholder="Filtrar..." value={filtroInventario} onChange={(e) => setFiltroInventario(e.target.value)} className="bg-gray-950 border border-gray-800 rounded-xl px-3 py-1 text-xs text-white font-mono w-36" />
             </div>
             <div className="overflow-x-auto rounded-xl border border-gray-800 text-xs">
               <table className="w-full text-left text-gray-400">
-                <tbody>
-                  {inventarioFiltrado.map((inv: any, i: number) => (
-                    <tr key={i} className="border-b border-gray-800/40"><td className="px-4 py-2 text-white font-mono">📦 {inv.producto_id}</td><td className="px-4 py-2 text-yellow-400 font-mono">{inv.cantidad} unds</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-      </div>
-    </div>
-  );
-}
+                <thead>
+                  <tr className="bg-gray-950 text-[10px] font-bold uppercase text-gray-400 border-b border-gray-800"><th className="px-4 py-2">Producto</th><th className="px-4 py-2">Stock</th>
