@@ -6,12 +6,12 @@ import { createClient } from "@supabase/supabase-js";
 // ==========================================
 // 🌐 CONFIGURACIÓN DE ENLACE DE SUPABASE
 // ==========================================
-const SUPABASE_URL = "https://gkfubkquycyasxxuhdi.supabase.co"; 
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc2MiOiJzdXBhYmFzZSIsInJ1bGUiOiJhbm9uIiwi..."; // Tu clave real de Supabase
+const SUPABASE_URL = "https://gkdfubkquycyasxxuhdi.supabase.co"; 
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrZGZ1YmtxdXljeWFzeHh1aGRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2NDI1ODQsImV4cCI6MjA5ODIxODU4NH0.jFpHlW2r1eJxsRO9HvUJhDgA5c69LDROJS5fcL9xHGg"; // Tu clave real de Supabase
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// 🛠️ INTERFAZ CORREGIDA: Evita que Vercel falle por tipos incorrectos
+
 interface PlantaDatos {
   usuarios: any[];
   productos: any[];
