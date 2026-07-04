@@ -1,657 +1,325 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
-export default function DashboardGlobal() {
-  const [pestaña, setPestaña] = useState('produccion');
-  const [datos, setDatos] = useState({
-    usuarios: [],
-    productos: [],
-    inventario: [],
-    ordenes: [],
-    lotes: [],
-    historico: []
-  });
-  const [cargando, setCargando] = useState(true);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-  // Estados para Filtros de Búsqueda
-  const [filtroTexto, setFiltroTexto] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState('TODOS');
+export default function DashboardPage() {
+  // Estados para contadores y datos del SCADA
+  const [totalUsuarios, setTotalUsuarios] = useState(0);
+  const [productosActivos, setProductosActivos] = useState(0);
+  const [itemsInventario, setItemsInventario] = useState(0);
+  const [ordenesProcesadas, setOrdenesProcesadas] = useState(0);
 
-  // Estados para el Formulario de Control de Procesos (HMI hacia Wokwi)
-  const [idProductoSeleccionado, setIdProductoSeleccionado] = useState('');
-  const [pesoPresentacion, setPesoPresentacion] = useState('25');
-  const [tamanoLote, setTamanoLote] = useState('10');
+  // Estados para las tablas e interfaz
+  const [usuarios, setUsuarios] = useState<any[]>([]);
+  const [inventario, setInventario] = useState<any[]>([]);
+  const [lineaProducto, setLineaProducto] = useState('Mani');
+  const [presentacion, setPresentacion] = useState('250ml');
+  const [estadoValvula, setEstadoValvula] = useState('CERRADA (ESPERA)');
+  
+  // Estados de control HMI
   const [enviandoProceso, setEnviandoProceso] = useState(false);
-  const [mensajeHMI, setMensajeHMI] = useState({ texto: '', tipo: '' });
-
-  // Estados dinámicos calculados para KPIs Industriales
-  const [kpis, setKpis] = useState({
-    eficienciaOEE: 100,
-    totalAceptadas: 0,
-    totalRechazadas: 0,
-    mermaGramos: 0,
-    estadoMaquina: 'INACTIVO',
-    ultimoLoteActivo: 'N/A'
+  const [mensajeHMI, setMensajeHMI] = useState<{ texto: string; tipo: 'SUCCESS' | 'ERROR' | 'INFO' | null }>({
+    texto: '',
+    tipo: null,
   });
 
+  // =====================================================================
+  // FUNCIÓN CRÍTICA: LECTURA COMPLETA DE LA BASE DE DATOS
+  // =====================================================================
   const consultarBaseDatos = async () => {
-    setCargando(true);
-    
-    const [resUser, resProd, resInv, resOrd, resLot, resHist] = await Promise.all([
-      supabase.from('usuarios').select('*'),
-      supabase.from('productos').select('*'),
-      supabase.from('inventario_materias').select('*'),
-      supabase.from('ordenes_produccion').select('*').order('fecha_creacion', { ascending: false }),
-      supabase.from('lotes').select('*'),
-      supabase.from('produccion_historica').select('*').order('fecha_hora', { ascending: false })
-    ]);
-
-    const historico = resHist.data || [];
-    const productos = resProd.data || [];
-
-    // Selección automática inicial del primer producto en el formulario
-    if (productos.length > 0 && !idProductoSeleccionado) {
-      setIdProductoSeleccionado(productos[0].id_producto.toString());
-    }
-
-    // Cálculos de KPIs Industriales
-    const totalBolsas = historico.length;
-    const aceptadas = historico.filter((h: any) => h.estado_llenado === 'ACEPTADO').length;
-    const rechazadas = historico.filter((h: any) => h.estado_llenado === 'RECHAZADO').length;
-    const oee = totalBolsas > 0 ? Math.round((aceptadas / totalBolsas) * 100) : 100;
-
-    const gramosMerma = historico
-      .filter((h: any) => h.estado_llenado === 'RECHAZADO')
-      .reduce((acc: number, h: any) => acc + Math.abs(h.peso_real - h.peso_objetivo), 0);
-
-    let estadoActual = 'INACTIVO';
-    let loteActivo = 'N/A';
-
-    if (historico.length > 0) {
-      const ultimoRegistro = historico[0];
-      const diferenciaTiempo = Math.abs(new Date().getTime() - new Date(ultimoRegistro.fecha_hora).getTime());
-      loteActivo = ultimoRegistro.id_lote;
-
-      if (diferenciaTiempo < 45000) {
-        estadoActual = 'OPERANDO';
-      } else {
-        estadoActual = 'LOTE_CONCLUIDO';
+    try {
+      // 1. Cargar Usuarios
+      const { data: dataUsuarios, error: errUser } = await supabase
+        .from('usuarios')
+        .select('*');
+      if (!errUser && dataUsuarios) {
+        setUsuarios(dataUsuarios);
+        setTotalUsuarios(dataUsuarios.length);
       }
+
+      // 2. Cargar Conteo de Productos Activos
+      const { data: dataProds, error: errProds } = await supabase
+        .from('productos')
+        .select('id_producto');
+      if (!errProds && dataProds) {
+        setProductosActivos(dataProds.length);
+      }
+
+      // 3. Cargar Inventario de Materias Primas (Columna Real: "nombre")
+      const { data: dataInv, error: errInv } = await supabase
+        .from('inventario_materias')
+        .select('id_materia, nombre, cantidad_disponible, unidad_medida');
+      if (!errInv && dataInv) {
+        setInventario(dataInv);
+        // Sumamos los items únicos en inventario
+        setItemsInventario(dataInv.length);
+      }
+
+      // 4. Cargar Cantidad de Órdenes Completadas o Procesadas
+      const { data: dataOrdenes, error: errOrd } = await supabase
+        .from('ordenes_produccion')
+        .select('id_orden');
+      if (!errOrd && dataOrdenes) {
+        setOrdenesProcesadas(dataOrdenes.length);
+      }
+
+    } catch (err) {
+      console.error('❌ Error interno al realizar el barrido de datos:', err);
     }
-
-    setKpis({
-      eficienciaOEE: oee,
-      totalAceptadas: aceptadas,
-      totalRechazadas: rechazadas,
-      mermaGramos: Math.round(gramosMerma * 100) / 100,
-      estadoMaquina: estadoActual,
-      ultimoLoteActivo: loteActivo
-    });
-
-    setDatos({
-      usuarios: resUser.data || [],
-      productos: productos,
-      inventario: resInv.data || [],
-      ordenes: resOrd.data || [],
-      lotes: resLot.data || [],
-      historico: historico
-    });
-    
-    setCargando(false);
   };
 
-  useEffect(() => {
-    consultarBaseDatos();
-    
-    const canal = supabase
-      .channel('cambios-globales')
-      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
-        consultarBaseDatos();
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(canal);
-    };
-  }, []);
-
-  const despacharNuevoProcesoWokwi = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setEnviandoProceso(true);
-    setMensajeHMI({ texto: '', tipo: '' });
-
+  // =====================================================================
+  // CONTROLADOR: SINCRONIZAR PLANTA / ACTIVAR ESCUCHADOR MQTT
+  // =====================================================================
+  const despacharNuevoProcesoWokwi = async () => {
     try {
-      await supabase
-        .from('ordenes_produccion')
-        .update({ estado: 'completado' })
-        .eq('estado', 'en_proceso');
+      setEnviandoProceso(true);
+      setMensajeHMI({ texto: '📡 Estableciendo enlace telemático con HiveMQ...', tipo: 'INFO' });
 
-      const { data: nuevaOrden, error: errOrden } = await supabase
-        .from('ordenes_produccion')
-        .insert([{
-          id_producto: parseInt(idProductoSeleccionado),
-          tamano_lote: parseInt(tamanoLote),
-          cantidad_solicitada: parseInt(tamanoLote), 
-          estado: 'en_proceso',
-          fecha_creacion: new Date().toISOString()
-        }])
-        .select()
-        .single();
-
-      if (errOrden) throw errOrden;
-
-      const productoNombre = datos.productos.find((p: any) => p.id_producto.toString() === idProductoSeleccionado)?.nombre || 'Materia';
+      // Despierta la pasarela API local para que Next.js escuche al ESP32
+      const respuesta = await fetch('/api/mqtt');
+      if (!respuesta.ok) throw new Error(`HTTP Error ${respuesta.status}`);
       
-      await fetch('/api/mqtt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transaccion: 'INICIAR_PROCESO_HMI',
-          id_orden: nuevaOrden.id_orden,
-          producto: productoNombre,
-          peso_objetivo: parseInt(pesoPresentacion),
-          tamano_lote: parseInt(tamanoLote)
-        })
-      });
+      const resultado = await respuesta.json();
+      console.log('📡 Pasarela MQTT Sincronizada:', resultado);
 
-      setMensajeHMI({ 
-        texto: `🚀 ¡Proceso enviado con éxito! Orden #${nuevaOrden.id_orden} despachada para ${productoNombre} (${pesoPresentacion}g). Encienda Wokwi para iniciar.`, 
-        tipo: 'EXITO' 
-      });
-      
-      consultarBaseDatos();
+      // Trae los datos más frescos de la base de datos para pintar la pantalla
+      await consultarBaseDatos();
+
+      setMensajeHMI({ texto: '⚡ ENLACE TELEINFORMÁTICO ESTABLECIDO CON SUPABASE', tipo: 'SUCCESS' });
     } catch (error: any) {
-      console.error(error);
-      setMensajeHMI({ texto: `❌ Error al despachar orden: ${error.message}`, tipo: 'ERROR' });
+      console.error('❌ Error al despachar orden:', error);
+      setMensajeHMI({ 
+        texto: `❌ Error al despachar orden: ${error.message || 'Servidor Inalcanzable'}`, 
+        tipo: 'ERROR' 
+      });
     } finally {
       setEnviandoProceso(false);
     }
   };
 
-  const obtenerDatosFiltrados = () => {
-    const texto = filtroTexto.toLowerCase();
+  // Inicialización Automática al cargar la página
+  useEffect(() => {
+    const inicializarSistema = async () => {
+      // Intenta encender el puente MQTT automáticamente en segundo plano
+      fetch('/api/mqtt').catch((e) => console.log('Pasarela dormida en arranque:', e));
+      // Llena los paneles gráficos con los datos reales
+      await consultarBaseDatos();
+    };
     
-    switch (pestaña) {
-      case 'produccion':
-        return datos.historico.filter((h: any) => {
-          const cumpleTexto = h.id_lote.toLowerCase().includes(texto) || h.estado_llenado.toLowerCase().includes(texto);
-          const cumpleEstado = filtroEstado === 'TODOS' || h.estado_llenado === filtroEstado;
-          return cumpleTexto && cumpleEstado;
-        });
-      case 'lotes':
-        return datos.lotes.filter((l: any) => l.numero_lote.toLowerCase().includes(texto));
-      case 'ordenes':
-        return datos.ordenes.filter((o: any) => {
-          const cumpleTexto = o.id_orden.toString().includes(texto);
-          const cumpleEstado = filtroEstado === 'TODOS' || o.estado === filtroEstado.toLowerCase();
-          return cumpleTexto && cumpleEstado;
-        });
-      case 'inventario':
-        return datos.inventario.filter((i: any) => i.nombre_materia.toLowerCase().includes(texto));
-      default:
-        return datos[pestaña] || [];
-    }
-  };
+    inicializarSistema();
 
-  const datosFiltrados = obtenerDatosFiltrados();
-  // Limitamos a un historial más compacto para que el gráfico no se sature
-  const ultimasBolsas = [...datos.historico].slice(0, 10).reverse();
-
-  if (cargando) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-gray-900 text-white font-sans">
-        <div className="text-center">
-          <div className="h-10 w-10 animate-spin rounded-full border-4 border-blue-500 border-t-transparent mx-auto mb-4"></div>
-          <p className="text-gray-400 font-medium">Sincronizando paneles SCADA/HMI de Supabase...</p>
-        </div>
-      </div>
-    );
-  }
+    // Opcional: Tiempo de refresco automático del SCADA cada 5 segundos
+    const intervalo = setInterval(consultarBaseDatos, 5000);
+    return () => clearInterval(intervalo);
+  }, []);
 
   return (
-    <div className="min-h-screen bg-gray-950 p-6 text-gray-100 font-sans">
-      <div className="mx-auto max-w-7xl">
-        
-        {/* ENCABEZADO */}
-        <header className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between border-b border-gray-800 pb-5">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight text-white bg-gradient-to-r from-blue-400 to-indigo-500 bg-clip-text text-transparent">
-              Planta Industrial — Consola de Control HMI / SCADA
-            </h1>
-            <p className="text-sm text-gray-400 mt-1">Gestión activa de órdenes de empaque y analítica integrada</p>
-          </div>
+    <div className="min-h-screen bg-[#080d1a] text-white p-6 font-sans">
+      {/* ENCABEZADO SCADA */}
+      <div className="flex justify-between items-center border-b border-slate-800 pb-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-black tracking-wider text-slate-100 flex items-center gap-2">
+            📊 PANEL DE CONTROL SCADA
+          </h1>
+          <p className="text-xs font-bold text-green-400 mt-1 tracking-wide uppercase">
+            🌐 ENLACE TELEINFORMÁTICO ESTABLECIDO CON SUPABASE
+          </p>
+          <p className="text-xs text-slate-400 mt-0.5">Operador Activo: <span className="text-blue-400 font-semibold">Operador Principal</span></p>
+        </div>
+        <div className="flex gap-3">
           <button 
-            onClick={consultarBaseDatos}
-            className="mt-4 md:mt-0 px-5 py-2.5 bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl text-sm font-semibold transition flex items-center gap-2"
+            onClick={despacharNuevoProcesoWokwi}
+            disabled={enviandoProceso}
+            className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all flex items-center gap-2 shadow-lg shadow-blue-900/40"
           >
-            🔄 Sincronizar Planta
+            {enviandoProceso ? '⏳ Sincronizando...' : '🔄 Sincronizar Planta'}
           </button>
-        </header>
+          <button className="bg-red-950/40 hover:bg-red-900 text-red-400 border border-red-900/60 text-xs font-bold px-4 py-2 rounded-lg transition-all flex items-center gap-1">
+            🔒 Salir
+          </button>
+        </div>
+      </div>
 
-        {/* PANEL DE CONTROL DE PROCESOS (HMI) */}
-        <section className="bg-gray-900 p-6 rounded-2xl border border-gray-800 mb-8 shadow-xl relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-500" />
-          <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">🕹️ Panel de Despacho y Control de Procesos (HMI)</h3>
-          <p className="text-xs text-gray-400 mb-4">Configura los parámetros de producción y envíalos directamente a la celda de Wokwi sin modificar el código.</p>
-          
-          <form onSubmit={despacharNuevoProcesoWokwi} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 items-end">
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">1. Seleccionar Producto</label>
-              <select 
-                value={idProductoSeleccionado}
-                onChange={(e) => setIdProductoSeleccionado(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm font-medium text-white focus:outline-none focus:border-blue-500 transition"
-              >
-                {datos.productos.map((p: any) => (
-                  <option key={p.id_producto} value={p.id_producto}>{p.nombre}</option>
-                ))}
-              </select>
-            </div>
+      {/* FEEDBACK HMI */}
+      {mensajeHMI.texto && (
+        <div className={`mb-6 p-3 rounded-lg text-xs font-bold border transition-all ${
+          mensajeHMI.tipo === 'SUCCESS' ? 'bg-green-950/40 border-green-500/50 text-green-400' :
+          mensajeHMI.tipo === 'ERROR' ? 'bg-red-950/40 border-red-500/50 text-red-400' :
+          'bg-blue-950/40 border-blue-500/50 text-blue-400'
+        }`}>
+          {mensajeHMI.texto}
+        </div>
+      )}
 
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">2. Peso de Presentación</label>
-              <select 
-                value={pesoPresentacion}
-                onChange={(e) => setPesoPresentacion(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm font-medium text-white focus:outline-none focus:border-blue-500 transition"
-              >
-                <option value="25">25 gramos (Estándar)</option>
-                <option value="50">50 gramos (Familiar)</option>
-                <option value="100">100 gramos (Industrial)</option>
-              </select>
-            </div>
+      {/* TARJETAS DE INDICADORES KPI */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Usuarios</p>
+          <h3 className="text-3xl font-black mt-1 text-slate-100">{totalUsuarios}</h3>
+        </div>
+        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Productos Activos</p>
+          <h3 className="text-3xl font-black mt-1 text-blue-400">{productosActivos}</h3>
+        </div>
+        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Items en Inventario</p>
+          <h3 className="text-3xl font-black mt-1 text-amber-400">{itemsInventario}</h3>
+        </div>
+        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Órdenes Procesadas</p>
+          <h3 className="text-3xl font-black mt-1 text-purple-400">{ordenesProcesadas}</h3>
+        </div>
+      </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">3. Tamaño del Lote</label>
-              <input 
-                type="number" 
-                min="5" 
-                max="100"
-                value={tamanoLote}
-                onChange={(e) => setTamanoLote(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm font-mono text-white focus:outline-none focus:border-blue-500 transition"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={enviandoProceso}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 px-4 rounded-xl font-bold text-sm transition disabled:opacity-50 active:scale-95 shadow-md shadow-blue-600/10"
-            >
-              {enviandoProceso ? '🚀 Despachando...' : '⚙️ Iniciar Proceso en Planta'}
-            </button>
-          </form>
-
-          {mensajeHMI.texto && (
-            <div className={`mt-4 p-3 rounded-xl border text-xs font-medium ${
-              mensajeHMI.tipo === 'EXITO' ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400'
-            }`}>
-              {mensajeHMI.texto}
-            </div>
-          )}
-        </section>
-
-        {/* KPIs INDUSTRIALES */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
-          <div className="bg-gray-900 p-5 rounded-2xl border border-gray-800 flex flex-col justify-between shadow-lg">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Estado de Celda</span>
-            <div className="flex items-center gap-3 my-3">
-              <span className={`h-4 w-4 rounded-full ${
-                kpis.estadoMaquina === 'OPERANDO' ? 'bg-green-500 animate-pulse ring-4 ring-green-500/20' : 
-                kpis.estadoMaquina === 'LOTE_CONCLUIDO' ? 'bg-blue-500 ring-4 ring-blue-500/20' : 'bg-amber-500'
-              }`} />
-              <h2 className="text-2xl font-extrabold text-white">
-                {kpis.estadoMaquina === 'OPERANDO' ? 'OPERANDO' : 
-                 kpis.estadoMaquina === 'LOTE_CONCLUIDO' ? 'CONCLUIDO' : 'EN ESPERA'}
-              </h2>
-            </div>
-            <p className="text-xs text-gray-400 truncate">Último Lote: <span className="font-mono text-blue-400">{kpis.ultimoLoteActivo}</span></p>
-          </div>
-
-          <div className="bg-gray-900 p-5 rounded-2xl border border-gray-800 flex flex-col justify-between shadow-lg">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Eficiencia de Calidad (OEE)</span>
-            <div className="my-2 flex items-baseline gap-2">
-              <h2 className={`text-4xl font-black ${kpis.eficienciaOEE >= 90 ? 'text-green-400' : 'text-amber-400'}`}>
-                {kpis.eficienciaOEE}%
-              </h2>
-            </div>
-            <div className="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
-              <div className={`h-full rounded-full ${kpis.eficienciaOEE >= 90 ? 'bg-green-500' : 'bg-amber-500'}`} style={{ width: `${kpis.eficienciaOEE}%` }} />
-            </div>
-          </div>
-
-          <div className="bg-gray-900 p-5 rounded-2xl border border-gray-800 flex flex-col justify-between shadow-lg">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Balance de Envases</span>
-            <div className="my-2 flex justify-between items-center">
-              <div>
-                <p className="text-2xl font-bold text-green-400">{kpis.totalAceptadas}</p>
-                <p className="text-[10px] uppercase font-semibold text-gray-500">Aceptados</p>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-bold text-red-400">{kpis.totalRechazadas}</p>
-                <p className="text-[10px] uppercase font-semibold text-gray-500">Rechazados</p>
-              </div>
-            </div>
-            <p className="text-xs text-gray-400">Total: <span className="font-bold text-white">{kpis.totalAceptadas + kpis.totalRechazadas} und</span></p>
-          </div>
-
-          <div className="bg-gray-900 p-5 rounded-2xl border border-gray-800 flex flex-col justify-between shadow-lg">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Registro de Mermas</span>
-            <div className="my-2">
-              <h2 className="text-3xl font-bold text-red-400">{kpis.mermaGramos} <span className="text-lg font-normal text-gray-400">g</span></h2>
-            </div>
-            <p className="text-xs text-gray-500">Desviación neta acumulada en celdas</p>
-          </div>
-        </section>
-
-        {/* =====================================================================
-            GRÁFICO SPC EN CUADRO PEQUEÑO (COMPLETAMENTE ARREGLADO Y ARRAIGADO)
-           ===================================================================== */}
-        {ultimasBolsas.length > 0 && (
-          <section className="bg-gray-900 p-6 rounded-2xl border border-gray-800 mb-8 shadow-xl max-w-2xl mx-auto">
-            <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">📊 Control Estadístico de Peso (SPC)</h3>
-                <p className="text-[10px] text-gray-400">Variación de las últimas {ultimasBolsas.length} muestras procesadas</p>
-              </div>
-              <div className="flex gap-3 text-[10px] font-mono mt-2 sm:mt-0 bg-gray-950 px-2.5 py-1.5 rounded-lg border border-gray-800">
-                <span className="text-blue-400">● Real</span>
-                <span className="text-green-400">— Obj</span>
-                <span className="text-red-400">-- Tol</span>
-              </div>
-            </div>
+      {/* SECCIÓN INTERACTIVA MANDO Y ACTUADOR */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        {/* MANDO DE DOSIFICACIÓN */}
+        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl flex flex-col justify-between">
+          <div>
+            <h2 className="text-sm font-black tracking-wider text-slate-200 border-b border-slate-800 pb-2 mb-4 flex items-center gap-1.5">
+              🎛️ MANDO DE DOSIFICACIÓN
+            </h2>
             
-            {/* Contenedor con overflow-hidden absoluto para evitar fugas visuales */}
-            <div className="bg-gray-950/90 rounded-xl p-4 border border-gray-800 h-48 flex flex-col justify-between relative overflow-hidden shadow-inner">
-              <svg viewBox="0 0 500 150" className="w-full h-36 overflow-hidden" preserveAspectRatio="none">
-                {/* Línea de Tolerancia Superior (+0.8g) */}
-                <line x1="0" y1="30" x2="500" y2="30" stroke="#ef4444" strokeWidth="1" strokeDasharray="4,4" />
-                {/* Línea Objetivo Central (0.0g de desviación) */}
-                <line x1="0" y1="75" x2="500" y2="75" stroke="#10b981" strokeWidth="1.5" />
-                {/* Línea de Tolerancia Inferior (-0.8g) */}
-                <line x1="0" y1="120" x2="500" y2="120" stroke="#ef4444" strokeWidth="1" strokeDasharray="4,4" />
-                
-                {/* Dibujo de Conexiones de Líneas */}
-                {ultimasBolsas.map((b: any, index) => {
-                  if (index === 0) return null;
-                  const x1 = ((index - 1) / (ultimasBolsas.length - 1)) * 460 + 20;
-                  const x2 = (index / (ultimasBolsas.length - 1)) * 460 + 20;
-                  
-                  // Corrección: Cálculo matemático blindado contra campos indefinidos
-                  const pesoReal1 = b.peso_real || 25;
-                  const pesoObj1 = b.peso_objetivo || 25;
-                  const dev1 = pesoReal1 - pesoObj1;
-
-                  const ultReal = ultimasBolsas[index - 1].peso_real || 25;
-                  const ultObj = ultimasBolsas[index - 1].peso_objetivo || 25;
-                  const devPrev = ultReal - ultObj;
-
-                  // Mapeo proporcional estricto al alto interno del SVG (75 es el centro plano)
-                  const y1 = 75 - (devPrev * 45);
-                  const y2 = 75 - (dev1 * 45);
-
-                  return <line key={`l-${index}`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" />;
-                })}
-
-                {/* Dibujo de los Nodos Circulares */}
-                {ultimasBolsas.map((b: any, index) => {
-                  const x = (index / (ultimasBolsas.length - 1)) * 460 + 20;
-                  const dev = (b.peso_real || 25) - (b.peso_objetivo || 25);
-                  const y = 75 - (dev * 45);
-                  const fueraDeRango = Math.abs(dev) > 0.8;
-
-                  return (
-                    <g key={`p-${index}`}>
-                      <circle cx={x} cy={y} r={fueraDeRango ? "4.5" : "3.5"} fill={fueraDeRango ? "#ef4444" : "#3b82f6"} className="transition-all" />
-                    </g>
-                  );
-                })}
-              </svg>
-              
-              <div className="flex justify-between text-[9px] text-gray-500 font-mono tracking-wider pt-1 border-t border-gray-900">
-                <span>⏮️ Historial</span>
-                <span>Último envase analizado ➔</span>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* NAVEGACIÓN ENTRE TABLAS */}
-        <div className="flex flex-wrap gap-2 mb-4 border-b border-gray-800 pb-3">
-          {[
-            { id: 'produccion', label: '📦 Histórico de Bolsas', count: datos.historico.length },
-            { id: 'lotes', label: '🏁 Lotes Concluidos', count: datos.lotes.length },
-            { id: 'ordenes', label: '📋 Órdenes de Producción', count: datos.ordenes.length },
-            { id: 'inventario', label: '🌾 Inventario Materia Prima', count: datos.inventario.length },
-            { id: 'productos', label: '🏷️ Catálogo Productos', count: datos.productos.length },
-            { id: 'usuarios', label: '👥 Usuarios y Operadores', count: datos.usuarios.length },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => { setPestaña(tab.id); setFiltroTexto(''); setFiltroEstado('TODOS'); }}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${
-                pestaña === tab.id ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-400 hover:bg-gray-800'
-              }`}
-            >
-              {tab.label} <span className="ml-1 text-xs px-1.5 py-0.5 bg-gray-950 rounded-full">{tab.count}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* COMPONENTE DE FILTRADO */}
-        <div className="bg-gray-900 p-4 rounded-xl border border-gray-800 mb-4 grid grid-cols-1 sm:grid-cols-2 gap-4 items-center shadow-md">
-          <div className="relative">
-            <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 text-sm">🔍</span>
-            <input 
-              type="text"
-              placeholder={`Filtrar en esta tabla...`}
-              value={filtroTexto}
-              onChange={(e) => setFiltroTexto(e.target.value)}
-              className="w-full bg-gray-950 border border-gray-800 rounded-xl pl-9 pr-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition"
-            />
-          </div>
-
-          {(pestaña === 'produccion' || pestaña === 'ordenes') && (
-            <div className="flex items-center gap-2 justify-end">
-              <span className="text-xs text-gray-400 font-medium uppercase tracking-wider">Estado:</span>
-              <select
-                value={filtroEstado}
-                onChange={(e) => setFiltroEstado(e.target.value)}
-                className="bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-xs font-semibold text-white focus:outline-none"
+            <div className="mb-4">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">1. Seleccionar Línea de Producto</label>
+              <select 
+                value={lineaProducto} 
+                onChange={(e) => setLineaProducto(e.target.value)}
+                className="w-full bg-[#0a0f1d] border border-slate-800 text-slate-200 text-xs rounded-lg p-2.5 focus:outline-none focus:border-blue-500 font-medium"
               >
-                <option value="TODOS">MOSTRAR TODOS</option>
-                {pestaña === 'produccion' ? (
-                  <>
-                    <option value="ACEPTADO">ACEPTADOS</option>
-                    <option value="RECHAZADO">RECHAZADOS</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="en_proceso">EN PROCESO</option>
-                    <option value="completado">COMPLETADOS</option>
-                  </>
-                )}
+                <option value="Mani">Maní</option>
+                <option value="Coco">Coco</option>
+                <option value="Almendra">Almendra</option>
               </select>
             </div>
-          )}
+
+            <div className="mb-4">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">2. Presentación</label>
+              <div className="grid grid-cols-3 gap-2">
+                {['250ml', '500ml', '1000ml'].map((tam) => (
+                  <button
+                    key={tam}
+                    onClick={() => setPresentacion(tam)}
+                    className={`text-xs py-2 font-bold rounded-lg border transition-all ${
+                      presentacion === tam 
+                        ? 'bg-blue-600/20 border-blue-500 text-blue-400 shadow-md' 
+                        : 'bg-[#0a0f1d] border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    {tam}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <button 
+            onClick={() => setEstadoValvula('ABRIR_ORDEN (PROCESANDO)')}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-3 rounded-lg uppercase tracking-wider transition-all mt-4 flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-900/20"
+          >
+            ▶️ Iniciar Proceso
+          </button>
         </div>
 
-        {/* CONTENEDOR DE TABLAS GENERALES */}
-        <div className="bg-gray-900 rounded-2xl border border-gray-800 overflow-hidden shadow-xl">
+        {/* MONITOR DEL ACTUADOR AUTOMÁTICO */}
+        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl md:col-span-2 flex flex-col justify-between">
+          <h2 className="text-sm font-black tracking-wider text-slate-200 border-b border-slate-800 pb-2 mb-4">
+            🧪 MONITOR DEL ACTUADOR AUTOMÁTICO
+          </h2>
           
-          {pestaña === 'produccion' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-800/60 text-gray-300 text-xs font-semibold uppercase tracking-wider border-b border-gray-800">
-                    <th className="p-4">ID Registro</th>
-                    <th className="p-4">Código Lote</th>
-                    <th className="p-4">Peso Real</th>
-                    <th className="p-4">Peso Objetivo</th>
-                    <th className="p-4">Precisión / Error</th>
-                    <th className="p-4">Estado</th>
-                    <th className="p-4">Fecha / Hora</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/50 text-sm">
-                  {datosFiltrados.map((h: any) => {
-                    const diff = h.peso_real - h.peso_objetivo;
-                    return (
-                      <tr key={h.id_registro} className="hover:bg-gray-850/30 transition">
-                        <td className="p-4 font-mono text-gray-500">#{h.id_registro}</td>
-                        <td className="p-4 font-bold text-blue-400 font-mono">{h.id_lote}</td>
-                        <td className="p-4 text-white font-semibold">{h.peso_real}g</td>
-                        <td className="p-4 text-gray-400">{h.peso_objetivo}g</td>
-                        <td className={`p-4 font-mono text-xs ${Math.abs(diff) <= 0.8 ? 'text-gray-400' : 'text-red-400 font-bold'}`}>
-                          {diff > 0 ? `+${diff.toFixed(2)}` : diff.toFixed(2)}g
-                        </td>
-                        <td className="p-4">
-                          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
-                            h.estado_llenado === 'ACEPTADO' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
-                          }`}>{h.estado_llenado}</span>
-                        </td>
-                        <td className="p-4 text-gray-400 font-mono text-xs">{new Date(h.fecha_hora).toLocaleString()}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center my-auto">
+            {/* Contenedor Animación o Gráfico */}
+            <div className="flex justify-center items-center h-32 bg-[#0a0f1d] rounded-xl border border-slate-800/60 relative overflow-hidden">
+              <div className="absolute bottom-0 w-16 bg-blue-500/30 border-t-2 border-blue-400 transition-all duration-1000" style={{ height: estadoValvula.includes('ABRIR_ORDEN') ? '80%' : '15%' }}></div>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest z-10">Tanque de Llenado</span>
             </div>
-          )}
 
-          {pestaña === 'lotes' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-800/60 text-gray-300 text-xs font-semibold uppercase tracking-wider border-b border-gray-800">
-                    <th className="p-4">ID</th>
-                    <th className="p-4">Número Lote</th>
-                    <th className="p-4">ID Orden</th>
-                    <th className="p-4">Producción</th>
-                    <th className="p-4">Aceptados</th>
-                    <th className="p-4">Rechazados</th>
+            {/* Datos de la Válvula */}
+            <div className="bg-[#0a0f1d] border border-slate-800 p-4 rounded-xl">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Estado de Válvula</p>
+              <div className="flex items-center gap-2 mt-1.5">
+                <span className={`w-2 h-2 rounded-full ${estadoValvula.includes('ABRIR_ORDEN') ? 'bg-orange-500 animate-pulse' : 'bg-slate-500'}`}></span>
+                <span className="text-xs font-black tracking-wide text-slate-200">{estadoValvula}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* REGISTROS BAJO EL SCADA (TABLAS DE BASE DE DATOS) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* REGISTRO DE USUARIOS */}
+        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl">
+          <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-3">
+            <h2 className="text-xs font-black tracking-wider text-slate-200 uppercase">👥 Registro de Usuarios</h2>
+            <span className="text-[10px] font-bold bg-[#0a0f1d] px-2 py-0.5 rounded border border-slate-800 text-slate-400">Filtro Activo</span>
+          </div>
+          <div className="overflow-x-auto max-h-48 overflow-y-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400 font-bold">
+                  <th className="pb-2">ID</th>
+                  <th className="pb-2">Nombre</th>
+                  <th className="pb-2">Correo</th>
+                </tr>
+              </thead>
+              <tbody className="text-xs font-medium text-slate-300 divide-y divide-slate-850">
+                {usuarios.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="py-4 text-center text-slate-500 font-bold">No hay operadores registrados</td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/50 text-sm">
-                  {datosFiltrados.map((l: any) => (
-                    <tr key={l.id_lote} className="hover:bg-gray-850/30 transition">
-                      <td className="p-4 font-mono text-gray-500">#{l.id_lote}</td>
-                      <td className="p-4 text-white font-bold font-mono">{l.numero_lote}</td>
-                      <td className="p-4 text-gray-400 font-mono text-xs">#{l.id_orden || 'N/A'}</td>
-                      <td className="p-4 text-gray-300">{l.fecha_produccion}</td>
-                      <td className="p-4 text-green-400 font-bold">{l.cantidad_producida} und</td>
-                      <td className="p-4 text-red-400 font-semibold">{l.cantidad_rechazada} und</td>
+                ) : (
+                  usuarios.map((user) => (
+                    <tr key={user.id_usuario} className="hover:bg-[#0a0f1d]/50">
+                      <td className="py-2 text-slate-500">#{user.id_usuario}</td>
+                      <td className="py-2 font-bold text-slate-200">{user.nombre}</td>
+                      <td className="py-2 text-slate-400">{user.correo}</td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
-          {pestaña === 'ordenes' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-800/60 text-gray-300 text-xs font-semibold uppercase tracking-wider border-b border-gray-800">
-                    <th className="p-4">ID Orden</th>
-                    <th className="p-4">Fecha Creación</th>
-                    <th className="p-4">ID Producto</th>
-                    <th className="p-4">Tamaño Lote</th>
-                    <th className="p-4">Estado</th>
+        {/* ESTADO DEL INVENTARIO */}
+        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl">
+          <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-3">
+            <h2 className="text-xs font-black tracking-wider text-slate-200 uppercase">📦 Estado del Inventario</h2>
+            <span className="text-[10px] font-bold bg-[#0a0f1d] px-2 py-0.5 rounded border border-slate-800 text-slate-400">Línea Crítica</span>
+          </div>
+          <div className="overflow-x-auto max-h-48 overflow-y-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400 font-bold">
+                  <th className="pb-2">Materia Prima</th>
+                  <th className="pb-2 text-right">Stock Disponible</th>
+                </tr>
+              </thead>
+              <tbody className="text-xs font-medium text-slate-300 divide-y divide-slate-850">
+                {inventario.length === 0 ? (
+                  <tr>
+                    <td colSpan={2} className="py-4 text-center text-slate-500 font-bold">No hay registros dinámicos</td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/50 text-sm">
-                  {datosFiltrados.map((o: any) => (
-                    <tr key={o.id_orden} className="hover:bg-gray-850/30 transition">
-                      <td className="p-4 font-mono text-blue-400 font-bold">#{o.id_orden}</td>
-                      <td className="p-4 text-gray-400 font-mono text-xs">{new Date(o.fecha_creacion).toLocaleString()}</td>
-                      <td className="p-4 text-white">ID Producto: {o.id_producto}</td>
-                      <td className="p-4 text-gray-300 font-mono">{o.tamano_lote}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${
-                          o.estado === 'completado' ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'
-                        }`}>{o.estado}</span>
+                ) : (
+                  inventario.map((inv) => (
+                    <tr key={inv.id_materia} className="hover:bg-[#0a0f1d]/50">
+                      <td className="py-2 font-bold text-slate-200">✨ {inv.nombre}</td>
+                      <td className="py-2 text-right font-black text-amber-400">
+                        {parseFloat(inv.cantidad_disponible).toFixed(2)} {inv.unidad_medida || 'Kg'}
                       </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {pestaña === 'inventario' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-800/60 text-gray-300 text-xs font-semibold uppercase tracking-wider border-b border-gray-800">
-                    <th className="p-4">ID Materia</th>
-                    <th className="p-4">Nombre Materia</th>
-                    <th className="p-4">Stock Disponible</th>
-                    <th className="p-4">Unidad Medida</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/50 text-sm">
-                  {datosFiltrados.map((i: any) => (
-                    <tr key={i.id_materia} className="hover:bg-gray-850/30 transition">
-                      <td className="p-4 font-mono text-gray-500">#{i.id_materia}</td>
-                      <td className="p-4 text-white font-bold">{i.nombre_materia}</td>
-                      <td className="p-4 text-blue-400 text-xl font-black">{parseFloat(i.cantidad_disponible).toFixed(3)}</td>
-                      <td className="p-4 text-gray-400">{i.unidad_medida}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {pestaña === 'productos' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-800/60 text-gray-300 text-xs font-semibold uppercase tracking-wider border-b border-gray-800">
-                    <th className="p-4">ID</th>
-                    <th className="p-4">Nombre Comercial</th>
-                    <th className="p-4">Presentación</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/50 text-sm">
-                  {datosFiltrados.map((p: any) => (
-                    <tr key={p.id_producto} className="hover:bg-gray-850/30 transition">
-                      <td className="p-4 font-mono text-gray-500">#{p.id_producto}</td>
-                      <td className="p-4 text-white font-bold">{p.nombre}</td>
-                      <td className="p-4 text-blue-400 font-semibold font-mono">{p.peso_presentacion}g</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {pestaña === 'usuarios' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-gray-800/60 text-gray-300 text-xs font-semibold uppercase tracking-wider border-b border-gray-800">
-                    <th className="p-4">ID Operador</th>
-                    <th className="p-4">Nombre</th>
-                    <th className="p-4">Correo</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800/50 text-sm">
-                  {datosFiltrados.map((u: any) => (
-                    <tr key={u.id_usuario} className="hover:bg-gray-850/30 transition">
-                      <td className="p-4 font-mono text-gray-500">#{u.id_usuario}</td>
-                      <td className="p-4 text-white font-bold">{u.nombre}</td>
-                      <td className="p-4 text-gray-300 font-mono text-xs">{u.correo}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
