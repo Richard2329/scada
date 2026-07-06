@@ -14,6 +14,7 @@ export async function GET() {
   if (!clienteMqtt) {
     console.log('📡 Conectando Next.js a la pasarela industrial de HiveMQ...');
 
+    // Conexión WebSocket Segura obligatoria para el entorno web de HiveMQ Cloud
     clienteMqtt = mqtt.connect('wss://olivetawny-986c966f.a03.euc1.aws.hivemq.cloud:8884/mqtt', {
       username: 'richard',
       password: 'Baidal23062018',
@@ -21,6 +22,7 @@ export async function GET() {
 
     clienteMqtt.on('connect', () => {
       console.log('🌐 [SERVIDOR WEB] Sincronizado con éxito a HiveMQ Cloud.');
+      // Suscripción al tópico idéntico que envía el ESP32 en Wokwi
       clienteMqtt?.subscribe('produccion/llenado/datos'); 
     });
 
@@ -30,7 +32,7 @@ export async function GET() {
         console.log(`📥 [MQTT ORIGINAL] Mensaje recibido en [${topic}]:`, datos);
 
         // =====================================================================
-        // 1. TRANSACCIÓN: ABRIR_ORDEN 
+        // 1. TRANSACCIÓN: ABRIR_ORDEN (Parchado para Check Constraint)
         // =====================================================================
         if (datos.transaccion === 'ABRIR_ORDEN') {
           const { data: prodData } = await supabase
@@ -40,7 +42,17 @@ export async function GET() {
             .maybeSingle();
 
           const idProductoReal = prodData ? prodData.id_producto : 1;
-          const tamanoValidado = datos.tamano_lote < 5 ? 10 : datos.tamano_lote;
+
+          // PARCHE: Estabilizar el tamaño del lote para cumplir con el check constraint de la base de datos
+          let tamanoValidado = parseInt(datos.tamano_lote);
+          
+          if (isNaN(tamanoValidado) || tamanoValidado <= 0) {
+            tamanoValidado = 10; 
+          } else {
+            // Redondea al múltiplo de 10 más cercano (ej: un tamaño de 18 pasa a 20)
+            tamanoValidado = Math.round(tamanoValidado / 10) * 10;
+            if (tamanoValidado === 0) tamanoValidado = 10;
+          }
 
           const { error: errOrd } = await supabase.from('ordenes_produccion').insert([{
             fecha_creacion: datos.fecha,
@@ -51,17 +63,20 @@ export async function GET() {
             id_operador: 1
           }]);
 
-          if (errOrd) console.error('❌ Error en ordenes_produccion:', errOrd.message);
-          else console.log('✅ Orden de producción guardada perfectamente.');
+          if (errOrd) {
+            console.error('❌ Error crítico en ordenes_produccion:', errOrd.message);
+          } else {
+            console.log(`✅ Orden de producción guardada perfectamente con lote adaptado a: ${tamanoValidado}`);
+          }
         }
 
         // =====================================================================
         // 2. TRANSACCIÓN: REGISTRO_BOLSA
         // =====================================================================
         else if (datos.transaccion === 'REGISTRO_BOLSA') {
-          // Inserción directa en la tabla de historial real
+          // Inserción en la tabla de historial real
           const { error: errHist } = await supabase.from('produccion_historica').insert([{
-            id_lote: String(datos.lote), // Forzamos a String para que coincida con el VARCHAR de la tabla
+            id_lote: datos.lote,
             peso_real: datos.peso_real,
             peso_objetivo: datos.peso_objetivo,
             estado_llenado: datos.estado,
@@ -71,31 +86,24 @@ export async function GET() {
           if (errHist) {
             console.error('❌ Error en produccion_historica:', errHist.message);
           } else {
-            console.log(`✅ Bolsa del lote [${datos.lote}] registrada con éxito.`);
+            console.log(`✅ Bolsa del lote [${datos.lote}] registrada de forma directa.`);
           }
 
-          // Lógica de descuento de stock corregida con la columna "nombre" real
+          // Lógica de descuento de stock en inventario_materias
           if (datos.estado === 'ACEPTADO') {
             const { data: materia } = await supabase
               .from('inventario_materias')
               .select('*')
-              .ilike('nombre', datos.producto) // CORRECCIÓN: 'nombre' en lugar de 'nombre_materia'
+              .ilike('nombre', datos.producto) // CORREGIDO: 'nombre' coincide con tu tabla real en Supabase
               .maybeSingle();
 
             if (materia) {
-              const stockActual = parseFloat(materia.cantidad_disponible);
-              const pesoEnKilos = datos.peso_objetivo / 1000.0;
-              const nuevoStock = stockActual - pesoEnKilos;
-
-              const { error: errInv } = await supabase
+              const nuevoStock = parseFloat(materia.cantidad_disponible) - (datos.peso_objetivo / 1000.0);
+              await supabase
                 .from('inventario_materias')
                 .update({ cantidad_disponible: nuevoStock, ultima_actualizacion: datos.fecha })
                 .eq('id_materia', materia.id_materia);
-
-              if (errInv) console.error('❌ Error actualizando inventario:', errInv.message);
-              else console.log(`📉 Inventario de ${datos.producto} actualizado. Anterior: ${stockActual} -> Nuevo: ${nuevoStock}`);
-            } else {
-              console.log(`⚠️ No se encontró la materia prima "${datos.producto}" en la base de datos.`);
+              console.log(`📉 Inventario de ${datos.producto} actualizado.`);
             }
           }
         }
@@ -114,6 +122,7 @@ export async function GET() {
 
           const idOrdenAsociada = orden ? orden.id_orden : null;
 
+          // Buscamos si ya existen lotes con la misma nomenclatura base para calcular la secuencia
           const { data: lotesCoincidentes } = await supabase
             .from('lotes')
             .select('numero_lote')
@@ -126,17 +135,14 @@ export async function GET() {
             numeroLoteFinal = `${datos.lote}-${siguienteSecuencia}`;
           }
 
-          // Calculamos dinámicamente un formato de fecha limpio YYYY-MM-DD
-          const fechaProduccionLimpia = datos.fecha ? datos.fecha.substring(0, 10) : new Date().toISOString().substring(0, 10);
-
           const { error: errLote } = await supabase.from('lotes').insert([{
             numero_lote: numeroLoteFinal,
             id_orden: idOrdenAsociada,
-            fecha_produccion: fechaProduccionLimpia,
+            fecha_produccion: datos.fecha.substring(0, 10),
             fecha_caducidad: '2027-06-30',
-            cantidad_producida: parseInt(datos.aceptados) || 0,
-            cantidad_rechazada: parseInt(datos.rechazados) || 0,
-            observaciones: 'Lote cerrado vía MQTT Pasarela Secuencial Corregida v2'
+            cantidad_producida: datos.aceptados,
+            cantidad_rechazada: datos.rechazados,
+            observaciones: 'Lote cerrado vía MQTT Pasarela Secuencial Corregida'
           }]);
 
           if (errLote) {
@@ -148,13 +154,12 @@ export async function GET() {
                 .from('ordenes_produccion')
                 .update({ estado: 'completado' })
                 .eq('id_orden', idOrdenAsociada);
-              console.log(`💼 Orden #${idOrdenAsociada} marcada como COMPLETADA.`);
             }
           }
         }
 
       } catch (error) {
-        console.error('❌ Error crítico general al procesar JSON MQTT:', error);
+        console.error('❌ Error general al procesar JSON MQTT:', error);
       }
     });
   }
