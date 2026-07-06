@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -8,320 +8,749 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function DashboardPage() {
-  // Estados para contadores y datos del SCADA
-  const [totalUsuarios, setTotalUsuarios] = useState(0);
-  const [productosActivos, setProductosActivos] = useState(0);
-  const [itemsInventario, setItemsInventario] = useState(0);
-  const [ordenesProcesadas, setOrdenesProcesadas] = useState(0);
+  // --- NAVEGACIÓN Y CONFIGURACIÓN INDUSTRIAL ---
+  const [pantallaActiva, setPantallaActiva] = useState<string>('principal');
+  const [rolSimulado, setRolSimulado] = useState<string>('supervisor');
+  const [alarmas, setAlarmas] = useState<any[]>([]);
 
-  // Estados para las tablas e interfaz
+  // --- PARAMETROS DE CONTROL DESPACHO ---
+  const [productoSeleccionado, setProductoSeleccionado] = useState<string>('');
+  const [pesoPresentacion, setPesoPresentacion] = useState<number>(25);
+  const [tamanoLoteInput, setTamanoLoteInput] = useState<number>(10);
+  const [mensajeHMI, setMensajeHMI] = useState<{ tipo: 'exito' | 'error' | 'info'; texto: string } | null>(null);
+
+  // --- ESTADOS METRICOS ---
+  const [totalUsuarios, setTotalUsuarios] = useState<number>(0);
+  const [productosActivos, setProductosActivos] = useState<number>(0);
+  const [ordenesProcesadas, setOrdenesProcesadas] = useState<number>(0);
+  const [materiaPrimaCount, setMateriaPrimaCount] = useState<number>(0);
+
+  // --- CONTADORES ESTADÍSTICOS DE CALIDAD ---
+  const [aceptados, setAceptados] = useState<number>(0);
+  const [rechazados, setRechazados] = useState<number>(0);
+  const [eficienciaOEE, setEficienciaOEE] = useState<number>(0);
+  const [registroMermas, setRegistroMermas] = useState<number>(0);
+  const [estadoCelda, setEstadoCelda] = useState<string>('CONCLUIDO');
+  const [ultimoLoteId, setUltimoLoteId] = useState<string>('N/A');
+
+  // --- LISTAS DE TABLAS ---
   const [usuarios, setUsuarios] = useState<any[]>([]);
   const [inventario, setInventario] = useState<any[]>([]);
-  const [lineaProducto, setLineaProducto] = useState('Mani');
-  const [presentacion, setPresentacion] = useState('250ml');
-  const [estadoValvula, setEstadoValvula] = useState('CERRADA (ESPERA)');
-  
-  // Estados de control HMI
-  const [enviandoProceso, setEnviandoProceso] = useState(false);
-  const [mensajeHMI, setMensajeHMI] = useState<{ texto: string; tipo: 'SUCCESS' | 'ERROR' | 'INFO' | null }>({
-    texto: '',
-    tipo: null,
-  });
+  const [lotesConcluidos, setLotesConcluidos] = useState<any[]>([]);
+  const [ordenesProduccion, setOrdenesProduccion] = useState<any[]>([]);
+  const [catalogoProductos, setCatalogoProductos] = useState<any[]>([]);
+  const [historicoBolsas, setHistoricoBolsas] = useState<any[]>([]);
 
-  // =====================================================================
-  // FUNCIÓN CRÍTICA: LECTURA COMPLETA DE LA BASE DE DATOS
-  // =====================================================================
-  const consultarBaseDatos = async () => {
-    try {
-      // 1. Cargar Usuarios
-      const { data: dataUsuarios, error: errUser } = await supabase
-        .from('usuarios')
-        .select('*');
-      if (!errUser && dataUsuarios) {
-        setUsuarios(dataUsuarios);
-        setTotalUsuarios(dataUsuarios.length);
-      }
+  // --- INTERFAZ DE FILTRADO CONTROLADO (SÉLECTOR EXCLUSIVO POR TABLA) ---
+  const [filtroTexto, setFiltroTexto] = useState<string>('');
+  const [filtroEstado, setFiltroEstado] = useState<string>('TODOS'); // Mapea las selecciones de manera unificada
+  const [cargando, setCargando] = useState<boolean>(true);
 
-      // 2. Cargar Conteo de Productos Activos
-      const { data: dataProds, error: errProds } = await supabase
-        .from('productos')
-        .select('id_producto');
-      if (!errProds && dataProds) {
-        setProductosActivos(dataProds.length);
-      }
-
-      // 3. Cargar Inventario de Materias Primas (Columna Real: "nombre")
-      const { data: dataInv, error: errInv } = await supabase
-        .from('inventario_materias')
-        .select('id_materia, nombre, cantidad_disponible, unidad_medida');
-      if (!errInv && dataInv) {
-        setInventario(dataInv);
-        // Sumamos los items únicos en inventario
-        setItemsInventario(dataInv.length);
-      }
-
-      // 4. Cargar Cantidad de Órdenes Completadas o Procesadas
-      const { data: dataOrdenes, error: errOrd } = await supabase
-        .from('ordenes_produccion')
-        .select('id_orden');
-      if (!errOrd && dataOrdenes) {
-        setOrdenesProcesadas(dataOrdenes.length);
-      }
-
-    } catch (err) {
-      console.error('❌ Error interno al realizar el barrido de datos:', err);
-    }
+  // --- RESETEAR FILTROS AL CAMBIAR DE SUBPANTALLA ---
+  const cambiarPantalla = (pantalla: string) => {
+    setPantallaActiva(pantalla);
+    setFiltroTexto('');
+    setFiltroEstado('TODOS');
   };
 
-  // =====================================================================
-  // CONTROLADOR: SINCRONIZAR PLANTA / ACTIVAR ESCUCHADOR MQTT
-  // =====================================================================
-  const despacharNuevoProcesoWokwi = async () => {
+  // --- TRAER DATOS DESDE SUPABASE ---
+  const cargarDatosSupabase = async () => {
     try {
-      setEnviandoProceso(true);
-      setMensajeHMI({ texto: '📡 Estableciendo enlace telemático con HiveMQ...', tipo: 'INFO' });
+      setCargando(true);
 
-      // Despierta la pasarela API local para que Next.js escuche al ESP32
-      const respuesta = await fetch('/api/mqtt');
-      if (!respuesta.ok) throw new Error(`HTTP Error ${respuesta.status}`);
-      
-      const resultado = await respuesta.json();
-      console.log('📡 Pasarela MQTT Sincronizada:', resultado);
+      const { data: dataUsuarios } = await supabase.from('usuarios').select('*');
+      const listaUsuarios = dataUsuarios || [];
+      setUsuarios(listaUsuarios);
+      setTotalUsuarios(listaUsuarios.length);
 
-      // Trae los datos más frescos de la base de datos para pintar la pantalla
-      await consultarBaseDatos();
+      const { data: dataProd } = await supabase.from('productos').select('*');
+      const listaProd = dataProd || [];
+      setCatalogoProductos(listaProd);
+      setProductosActivos(listaProd.length);
+      if (listaProd.length > 0 && !productoSeleccionado) {
+        setProductoSeleccionado(listaProd[0].nombre);
+      }
 
-      setMensajeHMI({ texto: '⚡ ENLACE TELEINFORMÁTICO ESTABLECIDO CON SUPABASE', tipo: 'SUCCESS' });
-    } catch (error: any) {
-      console.error('❌ Error al despachar orden:', error);
-      setMensajeHMI({ 
-        texto: `❌ Error al despachar orden: ${error.message || 'Servidor Inalcanzable'}`, 
-        tipo: 'ERROR' 
-      });
+      const { data: dataOrd } = await supabase.from('ordenes_produccion').select('*').order('fecha_creacion', { ascending: false });
+      const listaOrd = dataOrd || [];
+      setOrdenesProduccion(listaOrd);
+      setOrdenesProcesadas(listaOrd.length);
+
+      const { data: dataMat } = await supabase.from('inventario_materias').select('*');
+      const listaMat = dataMat || [];
+      setInventario(listaMat);
+      setMateriaPrimaCount(listaMat.length);
+
+      const { data: dataLotes } = await supabase.from('lotes').select('*').order('fecha_produccion', { ascending: false });
+      const listaLotes = dataLotes || [];
+      setLotesConcluidos(listaLotes);
+
+      const { data: dataBolsas } = await supabase.from('produccion_historica').select('*').order('fecha_hora', { ascending: false });
+      const listaBolsas = dataBolsas || [];
+      setHistoricoBolsas(listaBolsas);
+
+      // --- PROCESAMIENTO ANALÍTICO ---
+      if (listaLotes.length > 0) {
+        setUltimoLoteId(listaLotes[0].numero_lote);
+        let sumaAceptados = 0;
+        let sumaRechazados = 0;
+        listaLotes.forEach(l => {
+          sumaAceptados += Number(l.cantidad_producida || 0);
+          sumaRechazados += Number(l.cantidad_rechazada || 0);
+        });
+        setAceptados(sumaAceptados);
+        setRechazados(sumaRechazados);
+
+        const totalUnidades = sumaAceptados + sumaRechazados;
+        if (totalUnidades > 0) {
+          setEficienciaOEE(Math.round((sumaAceptados / totalUnidades) * 100));
+        }
+      }
+
+      // --- EVALUADOR DE ALARMAS DE PLANTA EN TIEMPO REAL ---
+      if (listaBolsas.length > 0) {
+        let desvioNetoTotal = 0;
+        const nuevasAlarmas: any[] = [];
+        
+        listaBolsas.forEach(b => {
+          const desvio = Math.abs(Number(b.peso_real || 0) - Number(b.peso_objetivo || 0));
+          desvioNetoTotal += desvio;
+          
+          if (b.estado_llenado === 'RECHAZADO') {
+            nuevasAlarmas.push({
+              id: b.id_historico || Math.random(),
+              fecha: b.fecha_hora,
+              mensaje: `Desviación crítica detectada en lote ${b.id_lote}: Peso de ${b.peso_real}g fuera de rango.`
+            });
+          }
+        });
+        
+        setAlarmas(nuevasAlarmas.slice(0, 5));
+        setRegistroMermas(parseFloat(desvioNetoTotal.toFixed(2)));
+        setEstadoCelda(listaBolsas[0].estado_llenado === 'ACEPTADO' ? 'PROCESANDO' : 'CRÍTICO / RECHAZO');
+      }
+
+    } catch (error) {
+      console.error('❌ Error general SCADA:', error);
     } finally {
-      setEnviandoProceso(false);
+      setCargando(false);
     }
   };
 
-  // Inicialización Automática al cargar la página
   useEffect(() => {
-    const inicializarSistema = async () => {
-      // Intenta encender el puente MQTT automáticamente en segundo plano
-      fetch('/api/mqtt').catch((e) => console.log('Pasarela dormida en arranque:', e));
-      // Llena los paneles gráficos con los datos reales
-      await consultarBaseDatos();
-    };
-    
-    inicializarSistema();
+    cargarDatosSupabase();
+    fetch('/api/mqtt').catch((err) => console.log('Pasarela MQTT Inicializada', err));
 
-    // Opcional: Tiempo de refresco automático del SCADA cada 5 segundos
-    const intervalo = setInterval(consultarBaseDatos, 5000);
-    return () => clearInterval(intervalo);
-  }, []);
+    const canalMesaControl = supabase
+      .channel('scada-cambios')
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+        cargarDatosSupabase();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canalMesaControl);
+    };
+  }, [productoSeleccionado]);
+
+  // --- LÓGICA DE DESPACHO SEGURO ---
+  const manejarDespachoHMI = () => {
+    setMensajeHMI(null);
+    if (rolSimulado === 'operador') {
+      setMensajeHMI({ tipo: 'error', texto: 'ACCESO DENEGADO: El rol de Operador solo tiene permisos de lectura HMI.' });
+      return;
+    }
+
+    const materiaAsociada = inventario.find(i => i.nombre.toLowerCase().includes(productoSeleccionado.toLowerCase()));
+    const gramosRequeridos = pesoPresentacion * tamanoLoteInput;
+    const kilosRequeridos = gramosRequeridos / 1000;
+
+    if (materiaAsociada && Number(materiaAsociada.cantidad_disponible) < kilosRequeridos) {
+      setMensajeHMI({ 
+        tipo: 'error', 
+        texto: `FALLO DE ENCLAVAMIENTO: Stock insuficiente de ${productoSeleccionado}. Requerido: ${kilosRequeridos}Kg, Disponible: ${materiaAsociada.cantidad_disponible}Kg.` 
+      });
+      return;
+    }
+
+    setMensajeHMI({ 
+      tipo: 'exito', 
+      texto: `ORDEN DESPACHADA: Iniciando lote de ${tamanoLoteInput} unidades de ${productoSeleccionado} (${gramosRequeridos}g netos). Comando enviado vía MQTT.` 
+    });
+  };
+
+  // --- MATRIZ GLOBAL DE FILTRADO CONTROLADO (TEXTO + SELECTS PREESTABLECIDOS) ---
+  const obtenerDatosFiltrados = () => {
+    const busqueda = filtroTexto.toLowerCase();
+
+    switch (pantallaActiva) {
+      case 'lotes':
+        return lotesConcluidos.filter(l => {
+          const cumpleTexto = (l.numero_lote || '').toLowerCase().includes(busqueda);
+          if (filtroEstado === 'OPTIMOS') return cumpleTexto && Number(l.cantidad_rechazada) === 0;
+          if (filtroEstado === 'RECHAZADOS') return cumpleTexto && Number(l.cantidad_rechazada) > 0;
+          return cumpleTexto;
+        });
+        
+      case 'bolsas':
+        return historicoBolsas.filter(b => {
+          const cumpleTexto = (b.id_lote || '').toLowerCase().includes(busqueda);
+          const cumpleSelect = filtroEstado === 'TODOS' || b.estado_llenado === filtroEstado;
+          return cumpleTexto && cumpleSelect;
+        });
+
+      case 'ordenes':
+        return ordenesProduccion.filter(o => {
+          const cumpleTexto = (o.id_orden || '').toString().toLowerCase().includes(busqueda);
+          const cumpleSelect = filtroEstado === 'TODOS' || (o.estado || '').toLowerCase() === filtroEstado.toLowerCase();
+          return cumpleTexto && cumpleSelect;
+        });
+
+      case 'inventario':
+        return inventario.filter(i => {
+          const cumpleTexto = (i.nombre || '').toLowerCase().includes(busqueda);
+          if (filtroEstado === 'CRITICO') return cumpleTexto && Number(i.cantidad_disponible) < 300;
+          if (filtroEstado === 'ESTABLE') return cumpleTexto && Number(i.cantidad_disponible) >= 300;
+          return cumpleTexto;
+        });
+
+      case 'productos':
+        return catalogoProductos.filter(p => {
+          const cumpleTexto = (p.nombre || '').toLowerCase().includes(busqueda);
+          if (filtroEstado === 'PREMIUM') return cumpleTexto && Number(p.precio) > 5;
+          if (filtroEstado === 'ESTANDAR') return cumpleTexto && Number(p.precio) <= 5;
+          return cumpleTexto;
+        });
+
+      case 'usuarios':
+        return usuarios.filter(u => {
+          const cumpleTexto = (u.nombre || '').toLowerCase().includes(busqueda) || (u.correo || '').toLowerCase().includes(busqueda);
+          const cumpleSelect = filtroEstado === 'TODOS' || (u.rol || 'operador').toLowerCase() === filtroEstado.toLowerCase();
+          return cumpleTexto && cumpleSelect;
+        });
+
+      default:
+        return [];
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-[#080d1a] text-white p-6 font-sans">
-      {/* ENCABEZADO SCADA */}
-      <div className="flex justify-between items-center border-b border-slate-800 pb-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-black tracking-wider text-slate-100 flex items-center gap-2">
-            📊 PANEL DE CONTROL SCADA
-          </h1>
-          <p className="text-xs font-bold text-green-400 mt-1 tracking-wide uppercase">
-            🌐 ENLACE TELEINFORMÁTICO ESTABLECIDO CON SUPABASE
-          </p>
-          <p className="text-xs text-slate-400 mt-0.5">Operador Activo: <span className="text-blue-400 font-semibold">Operador Principal</span></p>
-        </div>
-        <div className="flex gap-3">
-          <button 
-            onClick={despacharNuevoProcesoWokwi}
-            disabled={enviandoProceso}
-            className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all flex items-center gap-2 shadow-lg shadow-blue-900/40"
-          >
-            {enviandoProceso ? '⏳ Sincronizando...' : '🔄 Sincronizar Planta'}
-          </button>
-          <button className="bg-red-950/40 hover:bg-red-900 text-red-400 border border-red-900/60 text-xs font-bold px-4 py-2 rounded-lg transition-all flex items-center gap-1">
-            🔒 Salir
-          </button>
-        </div>
-      </div>
+    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-6 font-sans">
+      
+      {/* ========================================================================= */}
+      {/* VISTA 1: INTERFAZ O PANTALLA PRINCIPAL HMI / SCADA                       */}
+      {/* ========================================================================= */}
+      {pantallaActiva === 'principal' && (
+        <>
+          <header className="flex flex-col lg:flex-row justify-between items-start lg:items-center border-b border-slate-800 pb-4 mb-6 gap-4">
+            <div>
+              <h1 className="text-2xl font-black tracking-wider text-white">Planta Industrial — Consola de Control HMI / SCADA</h1>
+              <p className="text-xs text-slate-400 mt-1 font-medium">Gestión activa de órdenes de empaque y analítica integrada</p>
+            </div>
+            
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="bg-[#131a2e] border border-slate-800 rounded-lg p-1.5 px-3 flex items-center gap-2 text-xs">
+                <span className="text-slate-400 font-bold uppercase text-[10px]">Llave de Rol:</span>
+                <select 
+                  value={rolSimulado} 
+                  onChange={(e) => { setRolSimulado(e.target.value); setMensajeHMI(null); }}
+                  className="bg-[#0b0f19] text-blue-400 font-bold focus:outline-none cursor-pointer"
+                >
+                  <option value="supervisor">🔑 SUPERVISOR (Control)</option>
+                  <option value="operador">👁️ OPERADOR (Lectura)</option>
+                </select>
+              </div>
+              <button onClick={cargarDatosSupabase} className="px-4 py-2 bg-[#1e293b] hover:bg-slate-700 text-xs font-bold rounded-lg border border-slate-700 transition-all shadow-md">
+                🔄 Sincronizar Planta
+              </button>
+            </div>
+          </header>
 
-      {/* FEEDBACK HMI */}
-      {mensajeHMI.texto && (
-        <div className={`mb-6 p-3 rounded-lg text-xs font-bold border transition-all ${
-          mensajeHMI.tipo === 'SUCCESS' ? 'bg-green-950/40 border-green-500/50 text-green-400' :
-          mensajeHMI.tipo === 'ERROR' ? 'bg-red-950/40 border-red-500/50 text-red-400' :
-          'bg-blue-950/40 border-blue-500/50 text-blue-400'
-        }`}>
-          {mensajeHMI.texto}
-        </div>
-      )}
+          {/* BANNER DE ALARMAS ACTIVAS SCADA */}
+          {alarmas.length > 0 && (
+            <div className="mb-6 bg-red-950/40 border border-red-800 text-red-400 rounded-xl p-4 text-xs animate-pulse">
+              <span className="font-black uppercase tracking-widest text-[10px] block mb-1">🚨 Alertas del Sistema en Tiempo Real:</span>
+              <ul className="list-disc pl-4 font-mono text-[11px] space-y-0.5">
+                {alarmas.map((al, idx) => (
+                  <li key={idx}><strong>{al.fecha.split('T')[1] || al.fecha}:</strong> {al.mensaje}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
-      {/* TARJETAS DE INDICADORES KPI */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Usuarios</p>
-          <h3 className="text-3xl font-black mt-1 text-slate-100">{totalUsuarios}</h3>
-        </div>
-        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Productos Activos</p>
-          <h3 className="text-3xl font-black mt-1 text-blue-400">{productosActivos}</h3>
-        </div>
-        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Items en Inventario</p>
-          <h3 className="text-3xl font-black mt-1 text-amber-400">{itemsInventario}</h3>
-        </div>
-        <div className="bg-[#101626] border border-slate-800/80 p-4 rounded-xl shadow-md">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Órdenes Procesadas</p>
-          <h3 className="text-3xl font-black mt-1 text-purple-400">{ordenesProcesadas}</h3>
-        </div>
-      </div>
-
-      {/* SECCIÓN INTERACTIVA MANDO Y ACTUADOR */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-        {/* MANDO DE DOSIFICACIÓN */}
-        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl flex flex-col justify-between">
-          <div>
-            <h2 className="text-sm font-black tracking-wider text-slate-200 border-b border-slate-800 pb-2 mb-4 flex items-center gap-1.5">
-              🎛️ MANDO DE DOSIFICACIÓN
+          {/* PANEL DE DESPACHO INTERACTIVO */}
+          <section className="bg-[#131a2e] border border-slate-800/80 rounded-xl p-5 mb-6 shadow-xl">
+            <h2 className="text-xs font-bold text-white tracking-widest uppercase mb-4 flex items-center gap-2">
+              🕹️ Panel de Despacho y Control de Procesos (HMI)
             </h2>
             
-            <div className="mb-4">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">1. Seleccionar Línea de Producto</label>
-              <select 
-                value={lineaProducto} 
-                onChange={(e) => setLineaProducto(e.target.value)}
-                className="w-full bg-[#0a0f1d] border border-slate-800 text-slate-200 text-xs rounded-lg p-2.5 focus:outline-none focus:border-blue-500 font-medium"
-              >
-                <option value="Mani">Maní</option>
-                <option value="Coco">Coco</option>
-                <option value="Almendra">Almendra</option>
-              </select>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 mb-2 uppercase">1. Seleccionar Producto</label>
+                <select 
+                  value={productoSeleccionado}
+                  onChange={(e) => setProductoSeleccionado(e.target.value)}
+                  className="w-full bg-[#0b0f19] border border-slate-700 text-slate-200 rounded-lg p-2 text-xs focus:border-blue-500 focus:outline-none"
+                >
+                  {catalogoProductos.map((producto) => (
+                    <option key={producto.id_producto} value={producto.nombre}>{producto.nombre}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 mb-2 uppercase">2. Peso de Presentación</label>
+                <select onChange={(e) => setPesoPresentacion(Number(e.target.value))} className="w-full bg-[#0b0f19] border border-slate-700 text-slate-200 rounded-lg p-2 text-xs focus:border-blue-500 focus:outline-none">
+                  <option value={25}>25 gramos (Estándar)</option>
+                  <option value={50}>50 gramos</option>
+                  <option value={100}>100 gramos</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-400 mb-2 uppercase">3. Tamaño del Lote</label>
+                <input 
+                  type="number" 
+                  value={tamanoLoteInput} 
+                  onChange={(e) => setTamanoLoteInput(Math.max(1, Number(e.target.value)))}
+                  className="w-full bg-[#0b0f19] border border-slate-700 text-slate-200 rounded-lg p-2 text-xs focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <button onClick={manejarDespachoHMI} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs p-2.5 rounded-lg transition-all shadow-md">
+                ⚙️ Iniciar Proceso en Planta
+              </button>
             </div>
 
-            <div className="mb-4">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">2. Presentación</label>
-              <div className="grid grid-cols-3 gap-2">
-                {['250ml', '500ml', '1000ml'].map((tam) => (
-                  <button
-                    key={tam}
-                    onClick={() => setPresentacion(tam)}
-                    className={`text-xs py-2 font-bold rounded-lg border transition-all ${
-                      presentacion === tam 
-                        ? 'bg-blue-600/20 border-blue-500 text-blue-400 shadow-md' 
-                        : 'bg-[#0a0f1d] border-slate-800 text-slate-400 hover:border-slate-700'
-                    }`}
-                  >
-                    {tam}
-                  </button>
-                ))}
+            {/* FEEDBACK DEL PANEL HMI */}
+            {mensajeHMI && (
+              <div className={`mt-4 p-3 rounded-lg text-xs font-mono font-bold border ${
+                mensajeHMI.tipo === 'exito' ? 'bg-emerald-950/40 border-emerald-800 text-emerald-400' : 'bg-red-950/40 border-red-800 text-red-400'
+              }`}>
+                {mensajeHMI.texto}
+              </div>
+            )}
+          </section>
+
+          {/* TARJETAS METRICAS */}
+          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="bg-[#131a2e] border border-slate-800 p-4 rounded-xl shadow-lg">
+              <p className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">Estado de Celda</p>
+              <p className={`text-xl font-black mt-1 flex items-center gap-2 ${estadoCelda.includes('CRÍTICO') ? 'text-red-400' : 'text-white'}`}>
+                <span className={`w-2.5 h-2.5 rounded-full bg-blue-500 ${estadoCelda.includes('CRÍTICO') ? 'bg-red-500' : 'animate-pulse'}`}></span>
+                {estadoCelda}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-2">Último Lote: <span className="font-mono text-blue-400">{ultimoLoteId}</span></p>
+            </div>
+
+            <div className="bg-[#131a2e] border border-slate-800 p-4 rounded-xl shadow-lg">
+              <p className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">Eficiencia de Calidad (OEE)</p>
+              <p className="text-3xl font-black text-amber-400 mt-1">{eficienciaOEE}%</p>
+              <div className="w-full bg-slate-800 h-1.5 rounded-full mt-3 overflow-hidden">
+                <div className="bg-amber-400 h-full transition-all" style={{ width: `${eficienciaOEE}%` }}></div>
               </div>
             </div>
-          </div>
 
-          <button 
-            onClick={() => setEstadoValvula('ABRIR_ORDEN (PROCESANDO)')}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-3 rounded-lg uppercase tracking-wider transition-all mt-4 flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-900/20"
-          >
-            ▶️ Iniciar Proceso
-          </button>
-        </div>
-
-        {/* MONITOR DEL ACTUADOR AUTOMÁTICO */}
-        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl md:col-span-2 flex flex-col justify-between">
-          <h2 className="text-sm font-black tracking-wider text-slate-200 border-b border-slate-800 pb-2 mb-4">
-            🧪 MONITOR DEL ACTUADOR AUTOMÁTICO
-          </h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center my-auto">
-            {/* Contenedor Animación o Gráfico */}
-            <div className="flex justify-center items-center h-32 bg-[#0a0f1d] rounded-xl border border-slate-800/60 relative overflow-hidden">
-              <div className="absolute bottom-0 w-16 bg-blue-500/30 border-t-2 border-blue-400 transition-all duration-1000" style={{ height: estadoValvula.includes('ABRIR_ORDEN') ? '80%' : '15%' }}></div>
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest z-10">Tanque de Llenado</span>
+            <div className="bg-[#131a2e] border border-slate-800 p-4 rounded-xl shadow-lg">
+              <p className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">Balance de Envases</p>
+              <div className="flex justify-between items-center mt-2">
+                <div>
+                  <p className="text-lg font-black text-emerald-400">{aceptados}</p>
+                  <p className="text-[9px] text-slate-400 uppercase font-bold">Aceptados</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-lg font-black text-red-400">{rechazados}</p>
+                  <p className="text-[9px] text-slate-400 uppercase font-bold">Rechazados</p>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1 border-t border-slate-800 pt-1">Total: {aceptados + rechazados} und</p>
             </div>
 
-            {/* Datos de la Válvula */}
-            <div className="bg-[#0a0f1d] border border-slate-800 p-4 rounded-xl">
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Estado de Válvula</p>
-              <div className="flex items-center gap-2 mt-1.5">
-                <span className={`w-2 h-2 rounded-full ${estadoValvula.includes('ABRIR_ORDEN') ? 'bg-orange-500 animate-pulse' : 'bg-slate-500'}`}></span>
-                <span className="text-xs font-black tracking-wide text-slate-200">{estadoValvula}</span>
+            <div className="bg-[#131a2e] border border-slate-800 p-4 rounded-xl shadow-lg">
+              <p className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">Registro de Mermas</p>
+              <p className="text-2xl font-black text-red-500 mt-1">{registroMermas} g</p>
+              <p className="text-[11px] text-slate-400 mt-2">Desviación neta acumulada en celdas</p>
+            </div>
+          </section>
+
+          {/* MINI CONTROL SPC */}
+          <section className="bg-[#131a2e] border border-slate-800 rounded-xl p-5 mb-6 shadow-xl">
+            <h3 className="text-xs font-bold text-white tracking-wider mb-4 flex items-center gap-2">📊 Monitor Estadístico Rápido de Envases</h3>
+            <div className="h-28 bg-[#0b0f19] border border-slate-800 rounded-xl relative flex items-end p-2">
+              <div className="w-full h-full flex justify-between items-end px-4 z-10 pt-4">
+                {historicoBolsas.slice(0, 12).reverse().map((b, idx) => {
+                  const altura = Math.min(100, (Number(b.peso_real || 0) / 35) * 100);
+                  return (
+                    <div key={idx} className="w-3 bg-blue-500/80 rounded-t hover:bg-blue-400 transition-all relative group" style={{ height: `${altura}%` }}>
+                      <span className="absolute bottom-full mb-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900 text-[8px] p-1 rounded border border-slate-700 text-white z-50 left-1/2 -translate-x-1/2 whitespace-nowrap">
+                        {b.peso_real}g
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          </div>
-        </div>
-      </div>
+          </section>
 
-      {/* REGISTROS BAJO EL SCADA (TABLAS DE BASE DE DATOS) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* REGISTRO DE USUARIOS */}
-        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl">
-          <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-3">
-            <h2 className="text-xs font-black tracking-wider text-slate-200 uppercase">👥 Registro de Usuarios</h2>
-            <span className="text-[10px] font-bold bg-[#0a0f1d] px-2 py-0.5 rounded border border-slate-800 text-slate-400">Filtro Activo</span>
-          </div>
-          <div className="overflow-x-auto max-h-48 overflow-y-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400 font-bold">
-                  <th className="pb-2">ID</th>
-                  <th className="pb-2">Nombre</th>
-                  <th className="pb-2">Correo</th>
-                </tr>
-              </thead>
-              <tbody className="text-xs font-medium text-slate-300 divide-y divide-slate-850">
-                {usuarios.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="py-4 text-center text-slate-500 font-bold">No hay operadores registrados</td>
-                  </tr>
-                ) : (
-                  usuarios.map((user) => (
-                    <tr key={user.id_usuario} className="hover:bg-[#0a0f1d]/50">
-                      <td className="py-2 text-slate-500">#{user.id_usuario}</td>
-                      <td className="py-2 font-bold text-slate-200">{user.nombre}</td>
-                      <td className="py-2 text-slate-400">{user.correo}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+          {/* MENU DE ENTRADA A PANTALLAS AISLADAS */}
+          <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-3">📂 Consultar Bases de Datos de la Planta</h3>
+          <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <button onClick={() => cambiarPantalla('lotes')} className="p-4 bg-[#131a2e] border border-slate-800 hover:border-blue-500 rounded-xl text-center transition-all group shadow-md">
+              <div className="text-xl mb-1 group-hover:scale-110 transition-transform">📦</div>
+              <p className="text-xs font-bold text-white">Lotes Concluidos</p>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">{lotesConcluidos.length} Registros</span>
+            </button>
+            <button onClick={() => cambiarPantalla('bolsas')} className="p-4 bg-[#131a2e] border border-slate-800 hover:border-blue-500 rounded-xl text-center transition-all group shadow-md">
+              <div className="text-xl mb-1 group-hover:scale-110 transition-transform">🕒</div>
+              <p className="text-xs font-bold text-white">Histórico Bolsas</p>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">{historicoBolsas.length} Muestras</span>
+            </button>
+            <button onClick={() => cambiarPantalla('ordenes')} className="p-4 bg-[#131a2e] border border-slate-800 hover:border-blue-500 rounded-xl text-center transition-all group shadow-md">
+              <div className="text-xl mb-1 group-hover:scale-110 transition-transform">📋</div>
+              <p className="text-xs font-bold text-white">Órdenes Fábrica</p>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">{ordenesProduccion.length} Órdenes</span>
+            </button>
+            <button onClick={() => cambiarPantalla('inventario')} className="p-4 bg-[#131a2e] border border-slate-800 hover:border-blue-500 rounded-xl text-center transition-all group shadow-md">
+              <div className="text-xl mb-1 group-hover:scale-110 transition-transform">🌾</div>
+              <p className="text-xs font-bold text-white">Materia Prima</p>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">{materiaPrimaCount} Tipos</span>
+            </button>
+            <button onClick={() => cambiarPantalla('productos')} className="p-4 bg-[#131a2e] border border-slate-800 hover:border-blue-500 rounded-xl text-center transition-all group shadow-md">
+              <div className="text-xl mb-1 group-hover:scale-110 transition-transform">🏷️</div>
+              <p className="text-xs font-bold text-white">Catálogo Prod.</p>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">{catalogoProductos.length} Ítems</span>
+            </button>
+            <button onClick={() => cambiarPantalla('usuarios')} className="p-4 bg-[#131a2e] border border-slate-800 hover:border-blue-500 rounded-xl text-center transition-all group shadow-md">
+              <div className="text-xl mb-1 group-hover:scale-110 transition-transform">👥</div>
+              <p className="text-xs font-bold text-white">Usuarios/Op.</p>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">{totalUsuarios} Técnicos</span>
+            </button>
+          </section>
+        </>
+      )}
 
-        {/* ESTADO DEL INVENTARIO */}
-        <div className="bg-[#101626] border border-slate-800 p-5 rounded-xl">
-          <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-3">
-            <h2 className="text-xs font-black tracking-wider text-slate-200 uppercase">📦 Estado del Inventario</h2>
-            <span className="text-[10px] font-bold bg-[#0a0f1d] px-2 py-0.5 rounded border border-slate-800 text-slate-400">Línea Crítica</span>
+      {/* ========================================================================= */}
+      {/* VISTA 2: SUBPANTALLAS EXCLUSIVAS CON SELECTS ASOCIADOS EN TODO EL SISTEMA */}
+      {/* ========================================================================= */}
+      {pantallaActiva !== 'principal' && (
+        <div className="animate-fadeIn">
+          <div className="flex justify-between items-center mb-4">
+            <button 
+              onClick={() => setPantallaActiva('principal')}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-lg transition-all shadow-md flex items-center gap-2"
+            >
+              ⬅️ Volver a la Consola Principal
+            </button>
+
+            <button 
+              onClick={() => alert(`Exportando reporte analítico en tiempo real...`)}
+              className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg border border-emerald-700 transition-all shadow-md"
+            >
+              📥 Exportar Tabla (.CSV)
+            </button>
           </div>
-          <div className="overflow-x-auto max-h-48 overflow-y-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400 font-bold">
-                  <th className="pb-2">Materia Prima</th>
-                  <th className="pb-2 text-right">Stock Disponible</th>
-                </tr>
-              </thead>
-              <tbody className="text-xs font-medium text-slate-300 divide-y divide-slate-850">
-                {inventario.length === 0 ? (
-                  <tr>
-                    <td colSpan={2} className="py-4 text-center text-slate-500 font-bold">No hay registros dinámicos</td>
-                  </tr>
-                ) : (
-                  inventario.map((inv) => (
-                    <tr key={inv.id_materia} className="hover:bg-[#0a0f1d]/50">
-                      <td className="py-2 font-bold text-slate-200">✨ {inv.nombre}</td>
-                      <td className="py-2 text-right font-black text-amber-400">
-                        {parseFloat(inv.cantidad_disponible).toFixed(2)} {inv.unidad_medida || 'Kg'}
-                      </td>
-                    </tr>
-                  ))
+
+          <div className="bg-[#131a2e] border border-slate-800 rounded-xl p-5 mb-6 shadow-xl">
+            <h2 className="text-xl font-black text-white tracking-wide capitalize flex items-center gap-2">
+              📂 Explorador Exclusivo: Base de Datos de {pantallaActiva === 'ordenes' ? 'Órdenes' : pantallaActiva === 'bolsas' ? 'Histórico de Bolsas' : pantallaActiva}
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">Pantalla analítica aislada con herramientas de filtrado estadístico y representación gráfica.</p>
+          </div>
+
+          {/* GRÁFICOS ESTADÍSTICOS SEGÚN PANTALLA */}
+          <section className="bg-[#131a2e] border border-slate-800 rounded-xl p-5 mb-6 shadow-xl">
+            <h3 className="text-xs font-bold text-white tracking-wider uppercase mb-4">📈 Rendimiento Estadístico de la Tabla</h3>
+            
+            {pantallaActiva === 'lotes' && (
+              <div className="h-36 flex items-end justify-between px-6 bg-[#0b0f19] p-3 rounded-xl border border-slate-800">
+                {obtenerDatosFiltrados().slice(0, 10).map((l, i) => {
+                  const t = Number(l.cantidad_producida || 0) + Number(l.cantidad_rechazada || 0);
+                  const h = t > 0 ? Math.min(100, (Number(l.cantidad_producida || 0) / t) * 100) : 0;
+                  return (
+                    <div key={i} className="flex flex-col items-center flex-1 h-full justify-end group relative">
+                      <div className="w-6 bg-emerald-500 rounded-t transition-all group-hover:bg-emerald-400" style={{ height: `${h}%` }}></div>
+                      <span className="text-[9px] font-mono mt-2 text-slate-500">{l.numero_lote}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {pantallaActiva === 'bolsas' && (
+              <div className="h-36 bg-[#0b0f19] border border-slate-800 rounded-xl relative flex items-end p-2">
+                <div className="w-full h-full flex justify-between items-end px-4 pt-4">
+                  {obtenerDatosFiltrados().slice(0, 30).reverse().map((b, idx) => {
+                    const altura = Math.min(100, (Number(b.peso_real || 0) / 35) * 100);
+                    return (
+                      <div key={idx} className="flex flex-col items-center flex-1 h-full justify-end group relative">
+                        <div 
+                          className={`w-2.5 h-2.5 rounded-full border-2 border-[#0b0f19] ${b.estado_llenado === 'ACEPTADO' ? 'bg-blue-500' : 'bg-red-500'}`}
+                          style={{ marginBottom: `${altura}%` }}
+                        ></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {pantallaActiva === 'ordenes' && (
+              <div className="h-36 flex items-end justify-around bg-[#0b0f19] p-3 rounded-xl border border-slate-800">
+                {obtenerDatosFiltrados().slice(0, 10).map((o, i) => {
+                  const h = Math.min(100, (Number(o.tamano_lote || 0) / 50) * 100);
+                  return (
+                    <div key={i} className="w-5 bg-amber-500 rounded-t text-center group relative" style={{ height: `${h}%` }}>
+                      <span className="text-[8px] absolute -top-5 left-0 right-0 text-slate-400 font-bold">{o.tamano_lote}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {pantallaActiva === 'inventario' && (
+              <div className="h-36 flex items-end justify-around bg-[#0b0f19] p-3 rounded-xl border border-slate-800">
+                {obtenerDatosFiltrados().map((inv, i) => {
+                  const h = Math.min(100, (Number(inv.cantidad_disponible || 0) / 1000) * 100);
+                  return (
+                    <div key={i} className="flex flex-col items-center justify-end h-full w-12 group">
+                      <div className="w-full bg-cyan-600 rounded-t transition-all group-hover:bg-cyan-500" style={{ height: `${h}%` }}></div>
+                      <span className="text-[9px] text-slate-400 mt-2 truncate max-w-full font-bold">{inv.nombre}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {(pantallaActiva === 'productos' || pantallaActiva === 'usuarios') && (
+              <div className="h-36 flex items-end justify-around bg-[#0b0f19] p-3 rounded-xl border border-slate-800">
+                {obtenerDatosFiltrados().slice(0, 12).map((item, i) => {
+                  const valorBase = pantallaActiva === 'productos' ? Number(item.precio || 0) * 15 : 50;
+                  return (
+                    <div key={i} className="w-6 bg-purple-500 rounded-t transition-all hover:bg-purple-400" style={{ height: `${Math.min(100, valorBase)}%` }}></div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* TABLA CON FILTRADO COMPLETO Y TOTALMENTE CONTROLADO */}
+          <section className="bg-[#131a2e] border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+            <div className="p-4 border-b border-slate-800 bg-[#111728] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              
+              <div className="flex flex-wrap items-center gap-3 w-full max-w-2xl">
+                {/* Buscador de Texto General */}
+                <input 
+                  type="text"
+                  placeholder={`Buscar en esta tabla por ID / Texto...`}
+                  value={filtroTexto}
+                  onChange={(e) => setFiltroTexto(e.target.value)}
+                  className="bg-[#0b0f19] border border-slate-700 text-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-blue-500 w-full sm:w-64"
+                />
+
+                {/* FILTROS EXCLUSIVOS SELECTS (UN MENÚ ÚNICO PARA CADA TABLA ACTIVA) */}
+                {pantallaActiva === 'lotes' && (
+                  <div className="flex items-center gap-2 text-xs bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase">Rendimiento:</span>
+                    <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="bg-transparent text-emerald-400 font-black focus:outline-none cursor-pointer">
+                      <option value="TODOS">📦 TODOS LOS LOTES</option>
+                      <option value="OPTIMOS">⭐ LOTES ÓPTIMOS (0 RECHAZOS)</option>
+                      <option value="RECHAZADOS">🚨 LOTES CON MERMAS/RECHAZOS</option>
+                    </select>
+                  </div>
                 )}
-              </tbody>
-            </table>
-          </div>
+
+                {pantallaActiva === 'bolsas' && (
+                  <div className="flex items-center gap-2 text-xs bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase">Estado de Bolsa:</span>
+                    <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="bg-transparent text-blue-400 font-black focus:outline-none cursor-pointer">
+                      <option value="TODOS">📋 MOSTRAR TODAS</option>
+                      <option value="ACEPTADO">✅ SOLO ACEPTADOS</option>
+                      <option value="RECHAZADO">❌ SOLO RECHAZADOS</option>
+                    </select>
+                  </div>
+                )}
+
+                {pantallaActiva === 'ordenes' && (
+                  <div className="flex items-center gap-2 text-xs bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase">Estado Órden:</span>
+                    <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="bg-transparent text-amber-400 font-black focus:outline-none cursor-pointer">
+                      <option value="TODOS">📋 TODAS LAS ÓRDENES</option>
+                      <option value="completado">🟢 COMPLETADO</option>
+                      <option value="pendiente">🟡 PENDIENTE</option>
+                    </select>
+                  </div>
+                )}
+
+                {pantallaActiva === 'inventario' && (
+                  <div className="flex items-center gap-2 text-xs bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase">Materia Prima:</span>
+                    <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="bg-transparent text-cyan-400 font-black focus:outline-none cursor-pointer">
+                      <option value="TODOS">🌾 TODOS LOS INVENTARIOS</option>
+                      <option value="CRITICO">🚨 STOCK CRÍTICO (&lt; 300 Kg)</option>
+                      <option value="ESTABLE">🍏 STOCK ESTABLE (&gt;= 300 Kg)</option>
+                    </select>
+                  </div>
+                )}
+
+                {pantallaActiva === 'productos' && (
+                  <div className="flex items-center gap-2 text-xs bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase">Segmentación:</span>
+                    <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="bg-transparent text-pink-400 font-black focus:outline-none cursor-pointer">
+                      <option value="TODOS">🏷️ TODO EL VADEMÉCUM</option>
+                      <option value="PREMIUM">💎 CATEGORÍA PREMIUM (&gt; $5)</option>
+                      <option value="ESTANDAR">📦 CATEGORÍA ESTÁNDAR (&lt;= $5)</option>
+                    </select>
+                  </div>
+                )}
+
+                {pantallaActiva === 'usuarios' && (
+                  <div className="flex items-center gap-2 text-xs bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-1.5">
+                    <span className="text-slate-400 font-bold text-[10px] uppercase">Rango Técnico:</span>
+                    <select value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)} className="bg-transparent text-purple-400 font-black focus:outline-none cursor-pointer">
+                      <option value="TODOS">👥 TODOS LOS TÉCNICOS</option>
+                      <option value="administrador">👑 ADMINISTRADORES</option>
+                      <option value="supervisor">🔑 SUPERVISORES</option>
+                      <option value="operador">👁️ OPERADORES</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <span className="text-xs text-slate-400 font-bold whitespace-nowrap">
+                Filtrados: <span className="text-white font-mono">{obtenerDatosFiltrados().length}</span> registros
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              {cargando ? (
+                <div className="p-10 text-center text-xs font-bold text-slate-500 tracking-widest animate-pulse uppercase">Consultando base de datos completa...</div>
+              ) : obtenerDatosFiltrados().length === 0 ? (
+                <div className="p-10 text-center text-xs font-bold text-slate-500 tracking-widest uppercase">No existen registros que coincidan con este filtro controlado</div>
+              ) : (
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-[#0e1424] text-slate-400 border-b border-slate-800 font-bold uppercase tracking-wider">
+                      {pantallaActiva === 'lotes' && (
+                        <>
+                          <th className="p-3">Nº Lote</th>
+                          <th className="p-3">Aceptados</th>
+                          <th className="p-3">Rechazados</th>
+                          <th className="p-3">Fecha Production</th>
+                          <th className="p-3">Observaciones</th>
+                        </>
+                      )}
+                      {pantallaActiva === 'bolsas' && (
+                        <>
+                          <th className="p-3">Lote Asociado</th>
+                          <th className="p-3">Peso Real (g)</th>
+                          <th className="p-3">Objetivo (g)</th>
+                          <th className="p-3">Estado Control</th>
+                          <th className="p-3">Marca Temporal</th>
+                        </>
+                      )}
+                      {pantallaActiva === 'ordenes' && (
+                        <>
+                          <th className="p-3">ID Orden</th>
+                          <th className="p-3">Tamaño Lote</th>
+                          <th className="p-3">Cantidad Solicitada</th>
+                          <th className="p-3">Estado</th>
+                          <th className="p-3">Creación</th>
+                        </>
+                      )}
+                      {pantallaActiva === 'inventario' && (
+                        <>
+                          <th className="p-3">ID Materia</th>
+                          <th className="p-3">Materia Prima</th>
+                          <th className="p-3">Cantidad Disponible (Kg)</th>
+                          <th className="p-3">Última Actualización</th>
+                        </>
+                      )}
+                      {pantallaActiva === 'productos' && (
+                        <>
+                          <th className="p-3">ID Producto</th>
+                          <th className="p-3">Nombre</th>
+                          <th className="p-3">Descripción</th>
+                          <th className="p-3">Precio</th>
+                        </>
+                      )}
+                      {pantallaActiva === 'usuarios' && (
+                        <>
+                          <th className="p-3">ID</th>
+                          <th className="p-3">Nombre Completo</th>
+                          <th className="p-3">Correo Electrónico</th>
+                          <th className="p-3">Rol Técnico</th>
+                        </>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {obtenerDatosFiltrados().map((item: any, idx: number) => (
+                      <tr key={idx} className="border-b border-slate-800/60 hover:bg-[#161f36] transition-colors text-slate-300">
+                        {pantallaActiva === 'lotes' && (
+                          <>
+                            <td className="p-3 font-mono font-bold text-blue-400">{item.numero_lote}</td>
+                            <td className="p-3 text-emerald-400 font-bold">{item.cantidad_producida} ud</td>
+                            <td className="p-3 text-red-400 font-bold">{item.cantidad_rechazada} ud</td>
+                            <td className="p-3">{item.fecha_produccion}</td>
+                            <td className="p-3 italic text-slate-400">{item.observaciones}</td>
+                          </>
+                        )}
+                        {pantallaActiva === 'bolsas' && (
+                          <>
+                            <td className="p-3 font-mono font-bold text-slate-400">{item.id_lote}</td>
+                            <td className={`p-3 font-bold ${item.estado_llenado === 'ACEPTADO' ? 'text-blue-400' : 'text-red-400'}`}>{item.peso_real} g</td>
+                            <td className="p-3 text-slate-400">{item.peso_objetivo} g</td>
+                            <td className="p-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black ${item.estado_llenado === 'ACEPTADO' ? 'bg-blue-500/10 text-blue-400' : 'bg-red-500/10 text-red-400'}`}>
+                                {item.estado_llenado}
+                              </span>
+                            </td>
+                            <td className="p-3 text-slate-500 font-mono">{item.fecha_hora}</td>
+                          </>
+                        )}
+                        {pantallaActiva === 'ordenes' && (
+                          <>
+                            <td className="p-3 font-bold text-slate-400"># {item.id_orden}</td>
+                            <td className="p-3 font-bold text-white">{item.tamano_lote}</td>
+                            <td className="p-3">{item.cantidad_solicitada}</td>
+                            <td className="p-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${item.estado === 'completado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                                {item.estado}
+                              </span>
+                            </td>
+                            <td className="p-3 text-slate-400">{item.fecha_creacion}</td>
+                          </>
+                        )}
+                        {pantallaActiva === 'inventario' && (
+                          <>
+                            <td className="p-3 font-mono">MAT-{item.id_materia}</td>
+                            <td className="p-3 font-bold text-white">{item.nombre}</td>
+                            <td className={`p-3 font-bold ${Number(item.cantidad_disponible) < 300 ? 'text-red-400' : 'text-amber-400'}`}>{item.cantidad_disponible} Kg</td>
+                            <td className="p-3 text-slate-400">{item.ultima_actualizacion}</td>
+                          </>
+                        )}
+                        {pantallaActiva === 'productos' && (
+                          <>
+                            <td className="p-3 font-mono">PROD-{item.id_producto}</td>
+                            <td className="p-3 font-bold text-white">{item.nombre}</td>
+                            <td className="p-3 text-slate-400">{item.descripcion || 'Sin descripción'}</td>
+                            <td className="p-3 font-bold text-cyan-400">${item.precio}</td>
+                          </>
+                        )}
+                        {pantallaActiva === 'usuarios' && (
+                          <>
+                            <td className="p-3"># {item.id_usuario}</td>
+                            <td className="p-3 font-bold text-white">{item.nombre}</td>
+                            <td className="p-3 text-slate-400">{item.correo}</td>
+                            <td className="p-3 uppercase font-extrabold text-blue-400 text-[10px] tracking-wider">{item.rol || 'operador'}</td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
         </div>
-      </div>
+      )}
     </div>
   );
 }
